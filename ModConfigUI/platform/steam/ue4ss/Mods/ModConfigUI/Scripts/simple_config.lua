@@ -9,10 +9,11 @@
 --   local ok, err = configs.write("DamageNumber", values)
 --   local ok, err = configs.reset("DamageNumber") -- delete; owning mod recreates on load
 -- read returns a table or nil, error; write/update/reset return true or nil, error.
--- Writes do not notify/reload the owning mod or infer defaults and constraints.
+-- Successful changes optionally notify the owning mod to reload its own file.
 
 local json = require("json")
 local configIO = require("mcu_core.config_io")
+local UEHelpers = require("UEHelpers")
 local M = {}
 local source = debug.getinfo(1, "S").source:gsub("\\", "/")
 local modsDirectory = assert(source:match("^@(.+)/ModConfigUI/Scripts/[^/]+$"),
@@ -47,6 +48,22 @@ local function editable(value)
     local kind = type(value)
     return kind == 'boolean' or (kind == 'string' and utf8.len(value) ~= nil)
         or (kind == 'number' and value == value and math.abs(value) ~= math.huge)
+end
+
+local function notifyReload(modName)
+    -- Percent-escape punctuation instead of replacing it: A-B and A_B stay distinct.
+    local id = modName:gsub('[^%w_]', function(char)
+        return string.format('%%%02x', string.byte(char))
+    end)
+    local command = 'MCUChangeEvent_' .. id
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            local world = UEHelpers.GetWorld()
+            if not world or not world:IsValid() then error('No valid world for reload notification') end
+            UEHelpers.GetKismetSystemLibrary():ExecuteConsoleCommand(world, command, nil)
+        end)
+        if not ok then print('[ModConfigUI] Could not notify ' .. modName .. ': ' .. tostring(err) .. '\n') end
+    end)
 end
 
 local function readCurrent(modName)
@@ -131,6 +148,7 @@ local function save(modName, changes, replace, expected)
     local text
     text, err = configIO.write(current, path, original)
     if not text then return nil, err end
+    notifyReload(modName)
     return true
 end
 
@@ -144,7 +162,7 @@ function M.update(modName, changes, expected)
     return save(modName, changes, false, expected)
 end
 
--- The owning mod recreates its defaults on its next load.
+-- The owning mod recreates its defaults on notification or its next load.
 function M.reset(modName)
     local path, err = configPath(modName)
     if not path then return nil, err end
@@ -152,6 +170,7 @@ function M.reset(modName)
         local removed, removeError, code = os.remove(target)
         if not removed and code ~= 2 then return nil, "Cannot remove configuration: " .. tostring(removeError) end
     end
+    notifyReload(modName)
     return true
 end
 

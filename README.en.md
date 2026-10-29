@@ -301,15 +301,16 @@ Place a UTF-8 JSON file at `Mods/<ModName>/<ModName>.lang.<language-code>.json`,
 
 1. When the configuration file does not exist, your Mod creates `Mods/<ModName>/<ModName>.config.json`. `ModName` must match the Mod's installation folder name.
 2. Your Mod reads the configuration file itself.
+3. Register `MCUChangeEvent_<ModName>` and reload the configuration file when the event is received.
 
 Implement creation from defaults and reading. Do not implement configuration saving, to avoid overwriting configuration saved by MCU and vice versa.
 
 ### What MCU does
 MCU reads JSON configuration files named according to the requirements, generates their UI, and saves the user's changes back to the configuration file.
 
-**MCU does not notify your Mod or update your local variables after modifying the JSON file. The new configuration takes effect either after restarting the Mod or when you poll and reload the configuration file yourself.**
+MCU does not directly update your local variables. Register the optional notification below to reload your configuration after MCU saves it. Without registration, your Mod decides when to read the file again.
 
-Your Mod can run without depending on MCU, but you need a JSON library to read JSON. MCU provides a shared JSON library.
+Your Mod can run without depending on MCU, but you need a JSON library to read JSON. You can use your own JSON library or MCU's shared JSON library.
 
 
 ### Configuration example
@@ -329,23 +330,47 @@ Prefer having your code automatically generate the configuration file from defau
 See the [simple integration example](MCUExample/platform/steam/ue4ss/Mods/MCUExample/Scripts/main.lua).
 
 ```lua
-local json = require("json")
-local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
-local config = {
+local defaults = {
     BooleanValue = true,
     NumberValue = 12.5,
     TextValue = "Hello MCU",
 }
 
-for key, value in pairs(json.load(configPath) or {}) do
-    config[key] = value
-end
-json.dump(config, configPath)
+local json = require("json")
+local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
+local config
+local function loadConfig()
+    -- When adding settings, initialize config from defaults and overlay file values per key instead of replacing the table.
+    config = json.load(configPath)
+    if not config then
+        config = defaults
+        json.dump(config, configPath)
+    end
 
-for key, value in pairs(config) do
-    print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
+    for key, value in pairs(config) do
+        print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
+    end
 end
+loadConfig()
 ```
+
+### ChangeEvent
+
+Register the configuration change event:
+
+```lua
+RegisterConsoleCommandGlobalHandler("MCUChangeEvent_MyMod", function()
+    loadConfig()
+    return true
+end)
+```
+
+- You can omit this event registration, but configuration changes will then take effect the next time the Mod restarts, unless you reload the configuration through another mechanism.
+- The command is `MCUChangeEvent_` followed by the Mod folder name, for example `MCUChangeEvent_MyMod`. Keep letters, digits and underscores; encode every other byte as `%xx`. For example, `My-Mod` uses `MCUChangeEvent_My%2dMod`; a space is `%20` and a dot is `%2e`. Do not replace punctuation with underscores, as that can cause name collisions.
+- The event only notifies you that the configuration has changed; it carries no payload.
+- Each successful save that changes values sends one notification, including batch edits. Unchanged values, failed saves and simply opening the page do not notify.
+- Resetting defaults sends the same notification after deleting the file successfully. The handler should recreate defaults when the file is missing. Re-enter Mod Settings to see the recreated configuration.
+- Notification failure does not undo a saved or deleted file, and notifications are not automatically retried. Your Mod can still load its configuration when MCU is not running.
 
 
 ### Supported types
@@ -361,6 +386,6 @@ Unsupported types do not generate controls. When configuration is edited, unsupp
 
 ### Notes
 
-- For this integration method, the reset-to-defaults button deletes the entire configuration file (including unsupported fields) and asks the user to restart the Mod. Your Mod should create the configuration file from defaults at startup to complete the reset.
+- For this integration method, resetting defaults deletes the entire configuration file (including unsupported fields). Mods registered for notifications can recreate defaults immediately; otherwise, the Mod recreates them the next time it loads its configuration.
 - `json.load(path)` returns `nil` if the file cannot be opened and throws an error if parsing fails. `json.dump(value, path)` throws an error if writing fails.
 - The current shared JSON module is based on David Heiko Kolf's dkjson 2.11 (MIT license) and provides `load` / `dump` file helper interfaces.

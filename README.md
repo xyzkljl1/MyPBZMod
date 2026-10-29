@@ -300,15 +300,16 @@ printConfig(config)
 
 1. 配置文件不存在时，由你的mod创建 `Mods/<ModName>/<ModName>.config.json`。其中`ModName` 必须与 Mod 安装文件夹名称一致。
 2. 由你的 Mod 自己读取配置文件。
+3. 注册MCUChangeEvent_[ModName]，并在接收到事件时重新载入配置文件。
 
 请实现从默认值创建和读取操作，不要实现保存配置，以免和MCU保存的配置互相覆盖。
 
 ### MCU会做什么
 MCU会读取按条件命名好的json配置文件,为其生成UI，并将用户修改后的配置保存回配置文件。
 
-**MCU 修改 JSON 文件后不会通知你的 Mod，也不会更新你的本地变量。 新的配置要么等重启Mod后生效，要么你自己轮询重新加载配置文件。**
+MCU 不直接更新你的本地变量。可以注册下方的可选通知，在 MCU 保存后自行重载配置；未注册时，仍由 Mod 自己决定何时重新读取文件。
 
-你的MOD可以不依赖MCU而运作，但是你需要使用json库实现json读取，MCU 提供了共享的 JSON 库。
+你的MOD可以不依赖MCU而运作，但是你需要使用json库实现json读取，你可以使用自己的json库或MCU 提供的共享 JSON 库。
 
 
 ### 配置示例
@@ -328,23 +329,47 @@ MCU会读取按条件命名好的json配置文件,为其生成UI，并将用户�
 见 [simple 接入示例](MCUExample/platform/steam/ue4ss/Mods/MCUExample/Scripts/main.lua)。
 
 ```lua
-local json = require("json")
-local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
-local config = {
+local defaults = {
     BooleanValue = true,
     NumberValue = 12.5,
     TextValue = "Hello MCU",
 }
 
-for key, value in pairs(json.load(configPath) or {}) do
-    config[key] = value
-end
-json.dump(config, configPath)
+local json = require("json")
+local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
+local config
+local function loadConfig()
+    -- When adding settings, initialize config from defaults and overlay file values per key instead of replacing the table.
+    config = json.load(configPath)
+    if not config then
+        config = defaults
+        json.dump(config, configPath)
+    end
 
-for key, value in pairs(config) do
-    print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
+    for key, value in pairs(config) do
+        print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
+    end
 end
+loadConfig()
 ```
+
+### ChangeEvent
+
+注册配置变更事件
+
+```lua
+RegisterConsoleCommandGlobalHandler("MCUChangeEvent_MyMod", function()
+    loadConfig()
+    return true
+end)
+```
+
+- 你可以不注册这个事件，但这意味着下次重启mod时变更的配置才会生效(除非你自己通过其它方式重新载入配置)
+- 命令名为 `MCUChangeEvent_` 加 Mod 文件夹名，例如 `MCUChangeEvent_MyMod`。字母、数字、下划线原样保留，其它字符按字节写成 `%xx`；例如 `My-Mod` 对应 `MCUChangeEvent_My%2dMod`，空格为 `%20`，点为 `%2e`。不要用下划线替换这些字符，以免不同 Mod 重名。
+- 事件只会通知你配置变更了，不携带任何信息。
+- 成功保存实际变化后，每次保存只通知一次；批量修改多个字段也只通知一次。未改变、保存失败或仅打开页面不通知。
+- 恢复默认值时，删除文件成功后发送同一通知；处理函数应在文件不存在时生成默认配置。重新进入 Mod 设置页可看到生成后的配置。
+- 通知处理失败不撤销已经保存或删除的文件，也不会自动重试。未运行 MCU 时，Mod 仍可正常自行加载配置。
 
 
 ### 支持的类型
@@ -360,6 +385,6 @@ end
 
 ### 注意事项
 
-- 对于此种接入方式，“恢复默认值”按钮会直接删除整个配置文件(包括不支持的字段)，并要求用户重启Mod，你的 Mod 应在启动时根据默认值创建配置文件以实现重置。
+- 对于此种接入方式，“恢复默认值”按钮会直接删除整个配置文件（包括不支持的字段）。已注册通知的 Mod 可立即重新生成默认配置；未注册时，由 Mod 在下次加载配置时创建。
 - `json.load(path)` 在文件无法打开时返回 `nil`，解析失败会抛出异常；`json.dump(value, path)` 写入失败会抛出异常。
 - 当前共享 JSON 模块基于 David Heiko Kolf 的 dkjson 2.11（MIT 许可证），并提供 `load` / `dump` 文件辅助接口。
