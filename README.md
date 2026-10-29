@@ -16,6 +16,10 @@ ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改
 
 **不要在MOD里附带配置文件或自己实现文件读写**
 
+### MCU会做什么
+
+根据你的schema生成对应ui，用户修改配置后保存到配置文件，并更新lua内的config对象(通过开关控制)，并调用注册的onchange事件(可选注册回调)。
+
 ### 最小代码示例
 
 在你的 `Mods/<ModName>/Scripts/main.lua` 中：
@@ -54,7 +58,7 @@ local schema = {
             label = "数量",
             description = "要显示的数量",
             default = 12,
-            min = 0, max = 100, step = 1,
+            min = 0, max = 100,
             onchange = function(newValue, oldValue, fullConfig)
                 print(newValue)
             end,
@@ -169,8 +173,8 @@ local saved, err = mcu.ForceSaveConfig(config)
 | type | 控件 / 值类型 | 字段参数 |
 | --- | --- | --- |
 | `BoolToggle` | 布尔二选一 | 无 |
-| `IntBox` | 整数输入框 | 可选 `min/max/step` |
-| `FloatBox` | 浮点数输入框 | 可选 `min/max/step` |
+| `IntBox` | 整数输入框 | 可选 `min/max` |
+| `FloatBox` | 浮点数输入框 | 可选 `min/max` |
 | `IntSlider` | 整数滑动条 | 必填 `min/max/step` |
 | `FloatSlider` | 浮点数滑动条 | 必填 `min/max/step` |
 | `TextBox` | 文本输入框 | 可选 `minLength/maxLength/pattern` |
@@ -178,14 +182,15 @@ local saved, err = mcu.ForceSaveConfig(config)
 | `FloatSelect` | 浮点数选项 | 必填 `options` |
 | `TextSelect` | 文本选项 | 必填 `options` |
 | `Button` | 操作按钮，不保存配置值 | 必填`onclick` |
+| `Separator` | 分割线，不保存配置值 | 无 |
 
 其中`options` 是非空数组，每项的 `value` 必填、`label` 可选，例如 `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`。保存的是 `value`，不是下标或显示文字。
 
-`step` 必须为正，步长起点为 `min`，未指定 `min` 时为 `0`。整数必须在 Lua 整数可表示的范围内，浮点数必须为有限数值。
+`step` 仅用于滑动条，必须为正，步长起点为 `min`。整数必须在 Lua 整数可表示的范围内，浮点数必须为有限数值。
 
 文本长度按 UTF-8 字符计算。`pattern` 是 **Lua pattern**，不是正则表达式；需要整串匹配时添加 `^` 和 `$`。
 
-`default`自动推导：布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围和步长推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
+`default`自动推导：布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
 
 
 ### 完整代码示例
@@ -209,6 +214,7 @@ end
 local schema = {
     updateInPlace = true,
     fields = {
+        {key = "GeneralSection", type = "Separator", label = "基本设置"},
         {key = "Enabled", type = "BoolToggle", label = "布尔开关", default = true, onchange = onchange},
         {key = "IntegerValue", type = "IntBox", label = "整数输入", default = 12, onchange = onchange},
         {key = "FloatValue", type = "FloatBox", label = "浮点数输入", default = 1.25, onchange = onchange},
@@ -258,7 +264,35 @@ printConfig(config)
 - 当schema变更时，如果旧的值得符合新schema中同一配置项的范围，则会保留，否则直接抛弃而使用默认值。
 - 仅停用 MCU 界面、保留共享模块时，Mod 仍能初始化配置。不要引用 MCU 界面的私有脚本，只使用共享模块公开接口。
 - 不要随你的 Mod 分发共享模块的重复副本，也不要分发运行时生成的 `.schemaconfig.json`。
-- MCU 自身文字跟随游戏语言；你提供的 `label`、`description` 和选项文字不会被自动翻译。
+- MCU 自身文字跟随游戏语言；Mod 配置文字默认使用 schema，可通过下述语言包提供翻译。
+- 同一个 Mod 既注册 schema 又提供下方的simple json时，只有schema生效，文件夹名匹配不区分大小写。
+
+
+### UI语言包
+
+将 UTF-8 JSON 文件放在 `Mods/<ModName>/<ModName>.lang.<语言代码>.json`例如 `MyMod.lang.en.json`，可随 Mod 发布或单独安装，无需修改MOD代码。
+
+```json
+{
+  "fields": {
+    "Enabled": { "label": "Enabled", "description": "Enable this feature." },
+    "TextChoice": {
+      "label": "Display Mode",
+      "options": [
+        { "value": "compact", "label": "Compact" },
+        { "value": "normal", "label": "Normal" }
+      ]
+    }
+  }
+}
+```
+**语言包的fields是无序对象而非数组，和schema不同**
+
+- 跟随游戏语言，可选代码：`en`（英语）、`zh-Hans`（简体中文）、`zh-Hant`（繁体中文）、`ja`（日语）、`ko`（韩语）、`fr`（法语）、`de`（德语）、`es`（西班牙语）、`ru`（俄语）、`pt-BR`（巴西葡萄牙语）、`it`（意大利语）
+- 重新进入 Mod 配置页时刷新。
+- 如果存在对应语言包，则从语言包的 `fields` 根据 `key`(options则按 `value` 匹配) 查找对应 `label`、`description` 覆盖原来的schema里的值。
+- 语言包只改变UI文字，不改变配置、UI生成和存储逻辑。Simple 接入暂不支持语言包。
+- 可参考 [MCUExample2 英文语言包](MCUExample2/platform/steam/ue4ss/Mods/MCUExample2/MCUExample2.lang.en.json)；其中文默认文字仍在 schema 中。
 
 ## 二，轻量接入：simple json
 

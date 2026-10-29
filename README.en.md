@@ -16,6 +16,10 @@ In this guide, `Mods/` refers to `PBZ/platform/steam/ue4ss/Mods/`.
 
 **Do not bundle a configuration file with your Mod or implement file reading and writing yourself.**
 
+### What MCU does
+
+MCU generates the UI from your schema. When the user changes a setting, MCU saves the configuration to the file, updates the config object in Lua (controlled by the update option), and calls any registered onchange callbacks (registration is optional).
+
 ### Minimal code example
 
 In your `Mods/<ModName>/Scripts/main.lua`:
@@ -26,7 +30,7 @@ local config = require("mcu_core").InitFromFile({
 })
 print(config.Enabled)
 ```
-(Unless you explicitly pass UpdateInPlace = false) when the user changes a setting in the UI, **both the local file and the config object retained in Lua update automatically**. Your Mod's code can continue using `config.Enabled`.
+(Unless you explicitly pass `updateInPlace = false`) when the user changes a setting in the UI, **both the local file and the config object retained in Lua update automatically**. Your Mod's code can continue using `config.Enabled`.
 
 MCU's updates to the config object are one-way. If you modify the config object in your Mod, those changes **will not** be reflected in the configuration file or UI, and will be overwritten on the next configuration change.
 
@@ -54,7 +58,7 @@ local schema = {
             label = "Count",
             description = "The number to display",
             default = 12,
-            min = 0, max = 100, step = 1,
+            min = 0, max = 100,
             onchange = function(newValue, oldValue, fullConfig)
                 print(newValue)
             end,
@@ -76,7 +80,7 @@ For the `fields` format, see the `Supported types` section below. **Note that fi
 Parameters:
 
 - `schema.fields`: Required. An ordered array of fields; see the format below.
-- `schema.updateInPlace`: Optional; defaults to `true`. When true, MCU automatically updates the config object returned by InitFromFile. When false, it does not; you need to implement `OnChange` yourself to update the configuration in memory (the configuration file is still saved automatically as usual).
+- `schema.updateInPlace`: Optional; defaults to `true`. When true, MCU automatically updates the config object returned by InitFromFile. When false, it does not; you need to implement `onchange` yourself to update the configuration in memory (the configuration file is still saved automatically as usual).
 - The Mod name is obtained automatically from the calling script's path: folder name = Mod name.
 - On success, returns `config`, containing only configuration values, such as `config.Enabled` / `config.interval`; on failure, returns `nil, err`.
 - Initialization does not trigger `onchange`.
@@ -170,8 +174,8 @@ This function lets you save changes made proactively by your Mod instead of thro
 | type | Control / value type | Field parameters |
 | --- | --- | --- |
 | `BoolToggle` | Boolean two-option selector | None |
-| `IntBox` | Integer input box | Optional `min/max/step` |
-| `FloatBox` | Floating-point input box | Optional `min/max/step` |
+| `IntBox` | Integer input box | Optional `min/max` |
+| `FloatBox` | Floating-point input box | Optional `min/max` |
 | `IntSlider` | Integer slider | Required `min/max/step` |
 | `FloatSlider` | Floating-point slider | Required `min/max/step` |
 | `TextBox` | Text input box | Optional `minLength/maxLength/pattern` |
@@ -179,14 +183,15 @@ This function lets you save changes made proactively by your Mod instead of thro
 | `FloatSelect` | Floating-point selection | Required `options` |
 | `TextSelect` | Text selection | Required `options` |
 | `Button` | Action button; does not save a configuration value | Required `onclick` |
+| `Separator` | Divider; does not save a configuration value | None |
 
 `options` is a nonempty array. Each entry requires `value` and optionally provides `label`, for example `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`. The saved value is `value`, not the index or display text.
 
-`step` must be positive. Steps start at `min`, or at `0` when `min` is not specified. Integers must be within Lua's representable integer range; floating-point numbers must be finite.
+`step` applies only to sliders and must be positive. Steps start at `min`. Integers must be within Lua's representable integer range; floating-point numbers must be finite.
 
 Text length is counted in UTF-8 characters. `pattern` is a **Lua pattern**, not a regular expression; add `^` and `$` when the entire string must match.
 
-Automatic `default` inference: booleans use `false`, text uses an empty string, selections use the first option, sliders use the lower bound, and numeric inputs are inferred from `0` subject to the range and step. If the inferred value does not satisfy the constraints, initialization fails. For example, text with `minLength = 1` needs a nonempty default value.
+Automatic `default` inference: booleans use `false`, text uses an empty string, selections use the first option, sliders use the lower bound, and numeric inputs are inferred from `0` subject to the range. If the inferred value does not satisfy the constraints, initialization fails. For example, text with `minLength = 1` needs a nonempty default value.
 
 
 ### Complete code example
@@ -210,6 +215,7 @@ end
 local schema = {
     updateInPlace = true,
     fields = {
+        {key = "GeneralSection", type = "Separator", label = "General settings"},
         {key = "Enabled", type = "BoolToggle", label = "Boolean toggle", default = true, onchange = onchange},
         {key = "IntegerValue", type = "IntBox", label = "Integer input", default = 12, onchange = onchange},
         {key = "FloatValue", type = "FloatBox", label = "Floating-point input", default = 1.25, onchange = onchange},
@@ -259,7 +265,35 @@ printConfig(config)
 - When the schema changes, an old value is retained if it satisfies the range for the same configuration item in the new schema. Otherwise, it is discarded and the default value is used.
 - If only the MCU UI is disabled while the shared module remains installed, the Mod can still initialize its configuration. Do not reference private MCU UI scripts; use only the shared module's public interfaces.
 - Do not distribute duplicate copies of the shared module with your Mod, or distribute the runtime-generated `.schemaconfig.json`.
-- MCU's own text follows the game language. Your `label`, `description`, and option text are not translated automatically.
+- MCU's own text follows the game language. Mod configuration text defaults to the schema and can be translated using the optional packs below.
+- If the same Mod registers a schema and provides the simple JSON described below, only the schema takes effect. Folder names are matched case-insensitively.
+
+### UI language packs
+
+Place a UTF-8 JSON file at `Mods/<ModName>/<ModName>.lang.<language-code>.json`, for example `MyMod.lang.en.json`. It can be bundled with the Mod or installed separately; no Mod code changes are required.
+
+```json
+{
+  "fields": {
+    "Enabled": { "label": "Enabled", "description": "Enable this feature." },
+    "TextChoice": {
+      "label": "Display Mode",
+      "options": [
+        { "value": "compact", "label": "Compact" },
+        { "value": "normal", "label": "Normal" }
+      ]
+    }
+  }
+}
+```
+
+**Unlike schema fields, a language pack's `fields` is an unordered object, not an array.**
+
+- Follows the game language. Available codes: `en` (English), `zh-Hans` (Simplified Chinese), `zh-Hant` (Traditional Chinese), `ja` (Japanese), `ko` (Korean), `fr` (French), `de` (German), `es` (Spanish), `ru` (Russian), `pt-BR` (Brazilian Portuguese), `it` (Italian).
+- Refreshes when re-entering Mod Settings.
+- When a matching language pack exists, MCU looks up entries in its `fields` by `key` (or by `value` for options) and uses their `label` and `description` to override the original schema text.
+- Packs only change UI text, not configuration, UI generation, or storage logic. Simple integration does not currently support packs.
+- See the [MCUExample2 English pack](MCUExample2/platform/steam/ue4ss/Mods/MCUExample2/MCUExample2.lang.en.json); its default Chinese text remains in the schema.
 
 ## 2. Lightweight integration: simple json
 
