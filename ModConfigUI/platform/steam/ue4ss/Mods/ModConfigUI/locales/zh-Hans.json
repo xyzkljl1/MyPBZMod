@@ -1,0 +1,17 @@
+{
+  "mod_tab": "MOD",
+  "mod_settings": "Mod 设置",
+  "off": "关闭",
+  "on": "开启",
+  "reset_defaults": "恢复默认值",
+  "min_value": "最小值：{value}",
+  "max_value": "最大值：{value}",
+  "default_value": "默认值：{value}",
+  "reset_failed": "恢复失败",
+  "reset_done": "配置已删除；重新加载此 Mod 或重启游戏后重新生成",
+  "save_failed": "{name}（保存失败）",
+  "no_fields": "此配置没有可编辑项",
+  "no_configs": "尚未发现可编辑的配置",
+  "discovery_failed": "无法发现 Mod 配置，请查看 UE4SS 日志",
+  "config_read_failed": "{mod}：配置无法读取，请查看 UE4SS 日志"
+}

@@ -1,0 +1,158 @@
+-- MCU simple mode: Mods/<ModName>/<ModName>.config.json, without a schema.
+-- The owning mod creates its file and applies settings; this module only edits
+-- scalar fields in existing objects, preserving unsupported fields. Requiring it performs no configuration I/O.
+-- Usage inside MCU:
+--   local configs = require("simple_config")
+--   local values, err = configs.read("DamageNumber")
+--   local ok, err = configs.update("DamageNumber", { FontSize = 28 })
+--   values.FontSize = 30
+--   local ok, err = configs.write("DamageNumber", values)
+--   local ok, err = configs.reset("DamageNumber") -- delete; owning mod recreates on load
+-- read returns a table or nil, error; write/update/reset return true or nil, error.
+-- Writes do not notify/reload the owning mod or infer defaults and constraints.
+
+local json = require("json")
+local configIO = require("mcu_core.config_io")
+local M = {}
+local source = debug.getinfo(1, "S").source:gsub("\\", "/")
+local modsDirectory = assert(source:match("^@(.+)/ModConfigUI/Scripts/[^/]+$"),
+    "simple_config must be loaded from Mods/ModConfigUI/Scripts")
+
+local function validModName(modName)
+    return type(modName) == "string" and modName:match("^[%w_-][%w_. -]*$")
+        and not modName:match("[. ]$")
+end
+
+local function configPath(modName)
+    -- Accept one directory name, never a path supplied by a caller.
+    if not validModName(modName) then
+        return nil, "Invalid mod directory name"
+    end
+    local stem = modsDirectory .. "/" .. modName .. "/" .. modName
+    return stem .. ".config.json"
+end
+
+local function validate(values)
+    if type(values) ~= "table" or values == json.null
+        or (getmetatable(values) or {}).__jsontype == "array" then
+        return nil, "Simple configuration must be a JSON object"
+    end
+    for key, value in pairs(values) do
+        if type(key) ~= "string" then return nil, "Configuration keys must be strings" end
+    end
+    return true
+end
+
+local function editable(value)
+    local kind = type(value)
+    return kind == 'boolean' or (kind == 'string' and utf8.len(value) ~= nil)
+        or (kind == 'number' and value == value and math.abs(value) ~= math.huge)
+end
+
+local function readCurrent(modName)
+    local path, err = configPath(modName)
+    if not path then return nil, err end
+    local values, readError, original = configIO.readObject(path)
+    if not values then return nil, readError, path end
+    return values, nil, path, original
+end
+
+function M.read(modName)
+    local values, err = readCurrent(modName)
+    return values, err or (not values and "Configuration not found" or nil)
+end
+
+-- Only enumerate direct sibling mod directories. PBZ does not use UE4SS's
+-- standard Binaries/Win64 layout, so avoid IterateGameDirectories here.
+-- dir excludes reparse-point directories; no recursive scan or temporary files.
+function M.discover(schemaIds)
+    if modsDirectory:find('["%%!\r\n]') then
+        return nil, "Mods directory contains characters unsupported by directory discovery"
+    end
+    local command = 'dir /b /a:d-l "' .. modsDirectory:gsub("/", "\\") .. '\\*" 2>nul'
+    local opened, pipe, openError = pcall(io.popen, command, "r")
+    if not opened or not pipe then
+        return nil, "Cannot enumerate mods: " .. tostring(opened and openError or pipe)
+    end
+    local names = {}
+    local listed, listError = pcall(function()
+        for name in pipe:lines() do
+            name = name:gsub("\r$", "")
+            if validModName(name) and not (schemaIds or {})[name:lower()] then names[#names + 1] = name end
+        end
+    end)
+    local closed = pipe:close()
+    if not listed then return nil, "Cannot enumerate mods: " .. tostring(listError) end
+    if not closed then return nil, "Mod directory enumeration failed" end
+    table.sort(names)
+    local configs, issues = {}, {}
+    for _, name in ipairs(names) do
+        local values, err = readCurrent(name)
+        if values then
+            local fields = {}
+            for key, value in pairs(values) do
+                if utf8.len(key) and editable(value) then fields[key] = value end
+            end
+            configs[#configs + 1] = {name = name, values = fields}
+        elseif err then issues[#issues + 1] = {name = name, error = err} end
+    end
+    return configs, issues
+end
+
+local function save(modName, changes, replace, expected)
+    local supported, err = validate(changes)
+    if not supported then return nil, err end
+    local current, path, original
+    current, err, path, original = readCurrent(modName)
+    if not current then return nil, err or "Configuration not found" end
+    -- Without a schema, the existing file is the authority for keys and types.
+    for key, value in pairs(changes) do
+        if current[key] == nil then return nil, "Unknown configuration key: " .. key end
+        if editable(current[key]) and (not editable(value) or type(value) ~= type(current[key])) then
+            return nil, "Configuration type cannot change: " .. key
+        end
+        if editable(current[key]) and expected and current[key] ~= expected[key] then
+            return nil, "Configuration changed outside this editor: " .. key
+        end
+    end
+    if replace then
+        for key in pairs(current) do
+            if editable(current[key]) and changes[key] == nil then return nil, "Missing configuration key: " .. key end
+        end
+    end
+    local changed = false
+    for key, value in pairs(changes) do
+        if editable(current[key]) then
+            if current[key] ~= value then changed = true end
+            current[key] = value
+        end
+    end
+    if not changed then return true end
+    local text
+    text, err = configIO.write(current, path, original)
+    if not text then return nil, err end
+    return true
+end
+
+-- Save all editable fields; retain unsupported fields from the current file.
+function M.write(modName, values)
+    return save(modName, values, true)
+end
+
+-- Change only the supplied keys, preserving every other setting in the file.
+function M.update(modName, changes, expected)
+    return save(modName, changes, false, expected)
+end
+
+-- The owning mod recreates its defaults on its next load.
+function M.reset(modName)
+    local path, err = configPath(modName)
+    if not path then return nil, err end
+    for _, target in ipairs({path .. ".new", path}) do
+        local removed, removeError, code = os.remove(target)
+        if not removed and code ~= 2 then return nil, "Cannot remove configuration: " .. tostring(removeError) end
+    end
+    return true
+end
+
+return M

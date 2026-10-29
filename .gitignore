@@ -18,6 +18,3 @@ _temp/
 /UE4SS_v*.zip
 /zDEV-UE4SS_v*.zip
 /userUE4SS/
-
-# Runtime schema configuration values are not release payloads.
-/ModConfigUI/platform/steam/ue4ss/Mods/ModConfigUI/configs/
