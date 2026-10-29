@@ -1,5 +1,7 @@
 # ModConfigUI — 开发者接入指南
 
+[中文](README.md) | [English](README.en.md)
+
 ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改 Mod 配置。你可以选择以下**两种**接入方式。
 
 下文的 `Mods/` 指 `PBZ/platform/steam/ue4ss/Mods/`。
@@ -37,10 +39,10 @@ MCU对config对象的修改是单向的，如果你在mod里修改了config对�
 ```lua
 local config, err = mcu.InitFromFile(schema)
 ```
-根据你传入的scheam生成UI
-读取位于`Mods/<ModName>/<ModName>.schemaconfig.json`的配置文件并生成config对象返回，如果不存在则使用默认值创建配置文件。
+根据你传入的scheam生成UI，读取位于`Mods/<ModName>/<ModName>.schemaconfig.json`的配置文件并生成config对象返回，如果不存在则使用默认值创建配置文件。
+应当只调用一次。
 
-入参 `schema` 是一个 Lua table，不是 JSON 字符串，也不是配置文件路径。结构如下：
+入参 `schema` 是一个 Lua table，结构如下：
 
 ```lua
 local schema = {
@@ -76,7 +78,8 @@ local schema = {
 - `schema.updateInPlace`：可选，默认为 `true`。 为true时， MCU会自动更新InitFromFile返回的config对象；为false时则不会，此时你需要自己实现 `OnChange`以更新内存里的配置项 (配置文件仍然会照常自动保存)。
 - Mod 名称从调用脚本所在的路径自动取得，即文件夹名=Mod名。
 - 成功返回只包含配置值的 `config`，例如 `config.Enabled`/ `config.interval`；失败返回 `nil, err`。
-- 初始化不触发 `onchange`。同一 Mod 多次调用初始化会替换此前的注册，旧配置对象不再用于主动保存。
+- 初始化不触发 `onchange`。
+
 
 #### 2.`onchange(newValue, oldValue, fullConfig)` 回调
 
@@ -113,7 +116,8 @@ local schema = {
 
 #### 3.`onclick(fullConfig)` 回调
 
-在 `schema.fields` 的 Button 字段中设置 `onclick`（全小写）。Button 必须提供此回调，不能设置`onchange`。
+在 `schema.fields` 的 Button 类型配置中设置 `onclick`（全小写）。Button 必须提供此回调，不能设置`onchange`。
+Button是一个虚拟配置项，不产生实际会保存的配置，只提供onclick操作，
 
 ```lua
 {
@@ -142,7 +146,7 @@ local saved, err = mcu.ForceSaveConfig(config)
 ```
 **注意99%的情况下你不需使用此函数**
 它并非用于保存变更后的配置，UI产生的配置变动都是自动保存的。
-这个函数是用于让你保存一些不能通过UI设置的东西，例如你自己计算的缓存等。
+这个函数用于让你保存一些不通过用户操作而是通过mod主动修改的东西。
 
 - `config` 必须是当前注册对应的最新 API 配置对象，包含所有值字段，不能传普通副本、未知字段或过期对象。
 - 成功返回保存后的配置对象，使用 `config = saved` 接收；失败返回 `nil, err`。
