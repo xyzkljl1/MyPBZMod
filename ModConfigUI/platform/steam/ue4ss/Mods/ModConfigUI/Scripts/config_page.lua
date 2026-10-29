@@ -277,25 +277,38 @@ local function addResetButton(owner, state, group)
             schemaAction(state, group, 'reset', nil, group.resetRow, state.t('reset_defaults'))
             return
         end
-        local ok, err = simpleConfigs.reset(group.id)
+        if group.actionPending then return end
+        group.actionPending = true
+        group.body:SetIsEnabled(false)
+        local ok, err = simpleConfigs.reset(group.id, function(values, readError)
+            group.actionPending = false
+            if readError then log('Could not read reset configuration ' .. group.id .. ': ' .. tostring(readError)) end
+            if state.closed or not currentGroup(state, group) then return end
+            group.body:SetIsEnabled(true)
+            for index = #state.inputs, 1, -1 do
+                local input = state.inputs[index]
+                if input.mod == group.name then
+                    table.remove(state.inputs, index)
+                    ui.attempt('Could not release input', input.editor.destroy)
+                end
+            end
+            ui.attempt('Could not unbind reset', group.resetUnbind)
+            group.body:ClearChildren()
+            group.resetPending = true
+            if values then
+                state.refreshValues()
+            else
+                local status = createGameWidget(owner, 'W_SettingsListEntry_Collection_Category_C')
+                rowTitle(status, readError and state.t('config_read_failed', {mod = group.id}) or state.t('reset_done'))
+                addRow(group.body, status)
+            end
+        end)
         if not ok then
+            group.actionPending = false
+            group.body:SetIsEnabled(true)
             rowTitle(group.resetRow, state.t('reset_failed'))
             log('Could not reset ' .. group.name .. ': ' .. tostring(err))
-            return
         end
-        for index = #state.inputs, 1, -1 do
-            local input = state.inputs[index]
-            if input.mod == group.name then
-                table.remove(state.inputs, index)
-                ui.attempt('Could not release input', input.editor.destroy)
-            end
-        end
-        ui.attempt('Could not unbind reset', group.resetUnbind)
-        group.body:ClearChildren()
-        group.resetPending = true
-        local status = createGameWidget(owner, 'W_SettingsListEntry_Collection_Category_C')
-        rowTitle(status, state.t('reset_done'))
-        addRow(group.body, status)
     end, false, true)
 end
 

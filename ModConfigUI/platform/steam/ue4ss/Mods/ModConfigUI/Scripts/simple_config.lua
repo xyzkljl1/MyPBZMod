@@ -50,7 +50,7 @@ local function editable(value)
         or (kind == 'number' and value == value and math.abs(value) ~= math.huge)
 end
 
-local function notifyReload(modName)
+local function notifyReload(modName, complete)
     -- Percent-escape punctuation instead of replacing it: A-B and A_B stay distinct.
     local id = modName:gsub('[^%w_]', function(char)
         return string.format('%%%02x', string.byte(char))
@@ -63,6 +63,7 @@ local function notifyReload(modName)
             UEHelpers.GetKismetSystemLibrary():ExecuteConsoleCommand(world, command, nil)
         end)
         if not ok then print('[ModConfigUI] Could not notify ' .. modName .. ': ' .. tostring(err) .. '\n') end
+        if complete then complete() end
     end)
 end
 
@@ -163,14 +164,17 @@ function M.update(modName, changes, expected)
 end
 
 -- The owning mod recreates its defaults on notification or its next load.
-function M.reset(modName)
+function M.reset(modName, complete)
     local path, err = configPath(modName)
     if not path then return nil, err end
     for _, target in ipairs({path .. ".new", path}) do
         local removed, removeError, code = os.remove(target)
         if not removed and code ~= 2 then return nil, "Cannot remove configuration: " .. tostring(removeError) end
     end
-    notifyReload(modName)
+    notifyReload(modName, complete and function()
+        -- Check once after synchronous command handlers have returned.
+        complete(configIO.readObject(path))
+    end)
     return true
 end
 

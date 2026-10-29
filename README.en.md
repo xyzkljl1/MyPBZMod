@@ -369,7 +369,7 @@ end)
 - The command is `MCUChangeEvent_` followed by the Mod folder name, for example `MCUChangeEvent_MyMod`. Keep letters, digits and underscores; encode every other byte as `%xx`. For example, `My-Mod` uses `MCUChangeEvent_My%2dMod`; a space is `%20` and a dot is `%2e`. Do not replace punctuation with underscores, as that can cause name collisions.
 - The event only notifies you that the configuration has changed; it carries no payload.
 - Each successful save that changes values sends one notification, including batch edits. Unchanged values, failed saves and simply opening the page do not notify.
-- Resetting defaults sends the same notification after deleting the file successfully. The handler should recreate defaults when the file is missing. Re-enter Mod Settings to see the recreated configuration.
+- Resetting defaults sends the same notification after deleting the file successfully. The handler should recreate defaults when the file is missing. After the command call returns, MCU checks the file: if recreated, it refreshes the configuration; if still missing, it prompts the user to reload the Mod or restart the game. If the Mod recreates the file later, re-enter Mod Settings to refresh it.
 - Notification failure does not undo a saved or deleted file, and notifications are not automatically retried. Your Mod can still load its configuration when MCU is not running.
 
 
