@@ -2,7 +2,12 @@
 
 [中文](README.md) | [English](README.en.md)
 
+[Nexus Mods](https://www.nexusmods.com/phantombladezero/mods/86)
+
 ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改 Mod 配置。你可以选择以下**两种**接入方式。
+
+- [完全接入：schema 配置（推荐）](#一完全接入-schema-配置推荐)
+- [轻量接入：simple json](#二轻量接入simple-json)
 
 下文的 `Mods/` 指 `PBZ/platform/steam/ue4ss/Mods/`。
 
@@ -22,6 +27,8 @@ ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改
 
 ### 最小代码示例
 
+[跳转到完整代码示例](#完整代码示例)
+
 在你的 `Mods/<ModName>/Scripts/main.lua` 中：
 
 ```lua
@@ -30,6 +37,7 @@ local config = require("mcu_core").InitFromFile({
 })
 print(config.Enabled)
 ```
+
 (除非显示传入UpdateInPlace = false) 用户在UI上变更配置后，**本地文件和在lua中保存的config对象会自动更新**。你的业务代码继续使用 `config.Enabled` 即可。
 
 MCU对config对象的修改是单向的，如果你在mod里修改了config对象，修改**不会**反映到配置文件或UI上，而是在下一次配置变动时被覆盖。
@@ -38,13 +46,15 @@ MCU对config对象的修改是单向的，如果你在mod里修改了config对�
 
 通过 `local mcu = require("mcu_core")` 导入。(`list` 和 `request` 是内部接口不要使用)
 
-#### 1.`InitFromFile(schema)`
+#### 1. `InitFromFile(schema)`
 
 ```lua
 local config, err = mcu.InitFromFile(schema)
 ```
+
 根据你传入的scheam生成UI，读取位于`Mods/<ModName>/<ModName>.schemaconfig.json`的配置文件并生成config对象返回，如果不存在则使用默认值创建配置文件。
-应当只调用一次。
+
+**应当只调用一次。**
 
 入参 `schema` 是一个 Lua table，结构如下：
 
@@ -77,15 +87,15 @@ local schema = {
 
 `fields` 格式参考下方`支持的类型`章节，**注意fields是数组而非对象**
 
-参数:
+**参数:**
+
 - `schema.fields`：必填，有序字段数组，具体格式见下文。
 - `schema.updateInPlace`：可选，默认为 `true`。 为true时， MCU会自动更新InitFromFile返回的config对象；为false时则不会，此时你需要自己实现 `OnChange`以更新内存里的配置项 (配置文件仍然会照常自动保存)。
 - Mod 名称从调用脚本所在的路径自动取得，即文件夹名=Mod名。
 - 成功返回只包含配置值的 `config`，例如 `config.Enabled`/ `config.interval`；失败返回 `nil, err`。
 - 初始化不触发 `onchange`。
 
-
-#### 2.`onchange(newValue, oldValue, fullConfig)` 回调
+#### 2. `onchange(newValue, oldValue, fullConfig)` 回调
 
 在 `schema.fields` 的具体字段中设置 `onchange`（全小写），具体写法见下方章节。
 
@@ -100,13 +110,13 @@ local schema = {
 }
 ```
 
-参数：
+**参数：**
 
 - `newValue`：当前字段修改后的值。
 - `oldValue`：当前字段修改前的值。
 - `fullConfig`：本次修改后的完整配置快照，包含所有值字段，不包含 schema 或回调函数。
 
-触发规则：
+**触发规则：**
 
 - MCU 中的修改或恢复默认值成功保存后，仅对实际变化的字段触发；值没有变化、保存失败、初始化和 `ForceSaveConfig` 都不会触发。
 - 一次修改涉及多个字段时，按 `fields` 的声明顺序分别调用对应回调。
@@ -117,10 +127,10 @@ local schema = {
 
 `updateInPlace = false` 时，仅配置文件会自动更新，你的Mod内存里的配置项不会改变，你需要自行接收新配置，例如在回调中执行 `config = fullConfig`。
 
-
-#### 3.`onclick(fullConfig)` 回调
+#### 3. `onclick(fullConfig)` 回调
 
 在 `schema.fields` 的 Button 类型配置中设置 `onclick`（全小写）。Button 必须提供此回调，不能设置`onchange`。
+
 Button是一个虚拟配置项，不产生实际会保存的配置，只提供onclick操作，
 
 ```lua
@@ -136,27 +146,26 @@ Button是一个虚拟配置项，不产生实际会保存的配置，只提供on
 }
 ```
 
-- - `fullConfig`：按钮操作执行时的完整配置快照，包含所有值字段，不包含 schema 或回调函数。
-
+- `fullConfig`：按钮操作执行时的完整配置快照，包含所有值字段，不包含 schema 或回调函数。
 
 - 玩家点击该按钮时，在所属 Mod 的 Lua 环境、游戏线程中执行；初始化、修改其他配置和恢复默认值不会触发。
 - 不需要返回值。按钮自身不产生配置键值，也不会自动保存配置或触发 `onchange`。
 - 修改 `fullConfig` 不会写回配置文件。
 
-#### 4.`ForceSaveConfig(config)`
+#### 4. `ForceSaveConfig(config)`
 
 ```lua
 local saved, err = mcu.ForceSaveConfig(config)
 ```
+
 **注意99%的情况下你不需使用此函数**
+
 它并非用于保存变更后的配置，UI产生的配置变动都是自动保存的。
 这个函数用于让你保存一些不通过用户操作而是通过mod主动修改的东西。
 
 - `config` 必须是当前注册对应的最新 API 配置对象，包含所有值字段，不能传普通副本、未知字段或过期对象。
 - 成功返回保存后的配置对象，使用 `config = saved` 接收；失败返回 `nil, err`。
 - 不触发 `onchange`，也不能在 `onchange` 内调用。
-
-
 
 ### 支持的类型
 
@@ -167,8 +176,6 @@ local saved, err = mcu.ForceSaveConfig(config)
 - **控件参数: `min`、`max`等** (见下表)
 
 `fields` 是有序数组，控件按声明顺序展示。默认值只需在这里定义一次。
-
-####
 
 | type | 控件 / 值类型 | 字段参数 |
 | --- | --- | --- |
@@ -191,7 +198,6 @@ local saved, err = mcu.ForceSaveConfig(config)
 文本长度按 UTF-8 字符计算。`pattern` 是 **Lua pattern**，不是正则表达式；需要整串匹配时添加 `^` 和 `$`。
 
 `default`自动推导：布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
-
 
 ### 完整代码示例
 
@@ -267,7 +273,6 @@ printConfig(config)
 - MCU 自身文字跟随游戏语言；Mod 配置文字默认使用 schema，可通过下述语言包提供翻译。
 - 同一个 Mod 既注册 schema 又提供下方的simple json时，只有schema生效，文件夹名匹配不区分大小写。
 
-
 ### UI语言包
 
 将 UTF-8 JSON 文件放在 `Mods/<ModName>/<ModName>.lang.<语言代码>.json`例如 `MyMod.lang.en.json`，可随 Mod 发布或单独安装，无需修改MOD代码。
@@ -286,6 +291,7 @@ printConfig(config)
   }
 }
 ```
+
 **语言包的fields是无序对象而非数组，和schema不同**
 
 - 跟随游戏语言，可选代码：`en`（英语）、`zh-Hans`（简体中文）、`zh-Hant`（繁体中文）、`ja`（日语）、`ko`（韩语）、`fr`（法语）、`de`（德语）、`es`（西班牙语）、`ru`（俄语）、`pt-BR`（巴西葡萄牙语）、`it`（意大利语）
@@ -305,16 +311,17 @@ printConfig(config)
 请实现从默认值创建和读取操作，不要实现保存配置，以免和MCU保存的配置互相覆盖。
 
 ### MCU会做什么
+
 MCU会读取按条件命名好的json配置文件,为其生成UI，并将用户修改后的配置保存回配置文件。
 
 MCU 不直接更新你的本地变量。可以注册下方的可选通知，在 MCU 保存后自行重载配置；未注册时，仍由 Mod 自己决定何时重新读取文件。
 
 你的MOD可以不依赖MCU而运作，但是你需要使用json库实现json读取，你可以使用自己的json库或MCU 提供的共享 JSON 库。
 
-
 ### 配置示例
 
 注意你最好让程序在不存在配置文件时根据默认值自动生成，而不要将配置文件打包进入MOD，因为这会覆盖用户的本地配置。
+
 ```json
 {
   "ShootDuration": 0.3,
@@ -371,7 +378,6 @@ end)
 - 恢复默认值时，删除文件成功后发送同一通知；处理函数应在文件不存在时生成默认配置。命令调用返回后，MCU 检查文件：已生成则刷新配置，仍不存在才提示重新加载 Mod 或重启游戏。若 Mod 延迟生成文件，重新进入 Mod 设置页时刷新。
 - 通知处理失败不撤销已经保存或删除的文件，也不会自动重试。未运行 MCU 时，Mod 仍可正常自行加载配置。
 
-
 ### 支持的类型
 
 | JSON 值类型 | UI 控件 |
@@ -381,7 +387,6 @@ end)
 | 字符串 | 文本输入框 |
 
 不支持的类型不会生成对应控件，修改配置时不支持的项目会保持原样写回，不保证缩进和字段顺序不变。
-
 
 ### 注意事项
 

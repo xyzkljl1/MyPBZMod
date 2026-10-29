@@ -2,7 +2,12 @@
 
 [中文](README.md) | [English](README.en.md)
 
+[Nexus Mods](https://www.nexusmods.com/phantombladezero/mods/86)
+
 ModConfigUI (MCU) lets players edit Mod configurations in Phantom Blade Zero's native settings menu. You can choose between the following **two** integration methods.
+
+- [Full integration: schema configuration (recommended)](#1-full-integration-schema-configuration-recommended)
+- [Lightweight integration: simple json](#2-lightweight-integration-simple-json)
 
 In this guide, `Mods/` refers to `PBZ/platform/steam/ue4ss/Mods/`.
 
@@ -22,6 +27,8 @@ MCU generates the UI from your schema. When the user changes a setting, MCU save
 
 ### Minimal code example
 
+[Jump to the complete code example](#complete-code-example)
+
 In your `Mods/<ModName>/Scripts/main.lua`:
 
 ```lua
@@ -30,6 +37,7 @@ local config = require("mcu_core").InitFromFile({
 })
 print(config.Enabled)
 ```
+
 (Unless you explicitly pass `updateInPlace = false`) when the user changes a setting in the UI, **both the local file and the config object retained in Lua update automatically**. Your Mod's code can continue using `config.Enabled`.
 
 MCU's updates to the config object are one-way. If you modify the config object in your Mod, those changes **will not** be reflected in the configuration file or UI, and will be overwritten on the next configuration change.
@@ -38,13 +46,15 @@ MCU's updates to the config object are one-way. If you modify the config object 
 
 Import it with `local mcu = require("mcu_core")`. (`list` and `request` are internal interfaces; do not use them.)
 
-#### 1.`InitFromFile(schema)`
+#### 1. `InitFromFile(schema)`
 
 ```lua
 local config, err = mcu.InitFromFile(schema)
 ```
+
 Generates the UI from the schema you provide, reads the configuration file at `Mods/<ModName>/<ModName>.schemaconfig.json`, and returns a config object. If the file does not exist, it creates the configuration file using the default values.
-Call this only once.
+
+**Call this only once.**
 
 The `schema` argument is a Lua table with the following structure:
 
@@ -77,7 +87,7 @@ local schema = {
 
 For the `fields` format, see the `Supported types` section below. **Note that fields is an array, not an object.**
 
-Parameters:
+**Parameters:**
 
 - `schema.fields`: Required. An ordered array of fields; see the format below.
 - `schema.updateInPlace`: Optional; defaults to `true`. When true, MCU automatically updates the config object returned by InitFromFile. When false, it does not; you need to implement `onchange` yourself to update the configuration in memory (the configuration file is still saved automatically as usual).
@@ -85,8 +95,7 @@ Parameters:
 - On success, returns `config`, containing only configuration values, such as `config.Enabled` / `config.interval`; on failure, returns `nil, err`.
 - Initialization does not trigger `onchange`.
 
-
-#### 2.`onchange(newValue, oldValue, fullConfig)` callback
+#### 2. `onchange(newValue, oldValue, fullConfig)` callback
 
 Set `onchange` (all lowercase) on an individual field in `schema.fields`. See the example below.
 
@@ -101,13 +110,13 @@ Set `onchange` (all lowercase) on an individual field in `schema.fields`. See th
 }
 ```
 
-Parameters:
+**Parameters:**
 
 - `newValue`: The field's value after the change.
 - `oldValue`: The field's value before the change.
 - `fullConfig`: A complete configuration snapshot after this change, containing all value fields, without the schema or callback functions.
 
-Trigger rules:
+**Trigger rules:**
 
 - After an edit or a reset to defaults in MCU is successfully saved, only fields whose values actually changed trigger the callback. Unchanged values, failed saves, initialization, and `ForceSaveConfig` do not trigger it.
 - When a change affects multiple fields, their callbacks are called in the declaration order of `fields`.
@@ -118,10 +127,10 @@ With `updateInPlace = true`, the config returned by InitFromFile updates automat
 
 With `updateInPlace = false`, only the configuration file updates automatically; the configuration in your Mod's memory does not change. You need to accept the new configuration yourself, for example by assigning `config = fullConfig` in the callback.
 
-
-#### 3.`onclick(fullConfig)` callback
+#### 3. `onclick(fullConfig)` callback
 
 Set `onclick` (all lowercase) on a Button configuration item in `schema.fields`. Button must provide this callback and cannot set `onchange`.
+
 Button is a virtual configuration item: it does not create an actual saved configuration value and only provides an onclick action.
 
 ```lua
@@ -139,25 +148,24 @@ Button is a virtual configuration item: it does not create an actual saved confi
 
 - `fullConfig`: A complete configuration snapshot at the time the button action executes, containing all value fields, without the schema or callback functions.
 
-
 - Runs on the game thread in the owning Mod's Lua environment when the player clicks the button. Initialization, changes to other settings, and resetting defaults do not trigger it.
 - No return value is needed. The button itself does not create a configuration key-value pair, automatically save configuration, or trigger `onchange`.
 - Modifying `fullConfig` does not write changes back to the configuration file.
 
-#### 4.`ForceSaveConfig(config)`
+#### 4. `ForceSaveConfig(config)`
 
 ```lua
 local saved, err = mcu.ForceSaveConfig(config)
 ```
+
 **Note: you do not need this function in 99% of cases.**
+
 It is not intended for saving configuration changes made through the UI; those are all saved automatically.
 This function lets you save changes made proactively by your Mod instead of through user actions.
 
 - `config` must be the latest API configuration object for the current registration, containing all value fields. Do not pass an ordinary copy, unknown fields, or an outdated object.
 - On success, returns the saved configuration object; receive it with `config = saved`. On failure, returns `nil, err`.
 - Does not trigger `onchange` and cannot be called from within `onchange`.
-
-
 
 ### Supported types
 
@@ -168,8 +176,6 @@ This function lets you save changes made proactively by your Mod instead of thro
 - **Control parameters: `min`, `max`, etc.** (See the table below.)
 
 `fields` is an ordered array. Controls appear in declaration order. Default values only need to be defined here once.
-
-####
 
 | type | Control / value type | Field parameters |
 | --- | --- | --- |
@@ -192,7 +198,6 @@ This function lets you save changes made proactively by your Mod instead of thro
 Text length is counted in UTF-8 characters. `pattern` is a **Lua pattern**, not a regular expression; add `^` and `$` when the entire string must match.
 
 Automatic `default` inference: booleans use `false`, text uses an empty string, selections use the first option, sliders use the lower bound, and numeric inputs are inferred from `0` subject to the range. If the inferred value does not satisfy the constraints, initialization fails. For example, text with `minLength = 1` needs a nonempty default value.
-
 
 ### Complete code example
 
@@ -306,16 +311,17 @@ Place a UTF-8 JSON file at `Mods/<ModName>/<ModName>.lang.<language-code>.json`,
 Implement creation from defaults and reading. Do not implement configuration saving, to avoid overwriting configuration saved by MCU and vice versa.
 
 ### What MCU does
+
 MCU reads JSON configuration files named according to the requirements, generates their UI, and saves the user's changes back to the configuration file.
 
 MCU does not directly update your local variables. Register the optional notification below to reload your configuration after MCU saves it. Without registration, your Mod decides when to read the file again.
 
 Your Mod can run without depending on MCU, but you need a JSON library to read JSON. You can use your own JSON library or MCU's shared JSON library.
 
-
 ### Configuration example
 
 Prefer having your code automatically generate the configuration file from defaults when it does not exist. Do not bundle the configuration file with your Mod, as this would overwrite the user's local configuration.
+
 ```json
 {
   "ShootDuration": 0.3,
@@ -372,7 +378,6 @@ end)
 - Resetting defaults sends the same notification after deleting the file successfully. The handler should recreate defaults when the file is missing. After the command call returns, MCU checks the file: if recreated, it refreshes the configuration; if still missing, it prompts the user to reload the Mod or restart the game. If the Mod recreates the file later, re-enter Mod Settings to refresh it.
 - Notification failure does not undo a saved or deleted file, and notifications are not automatically retried. Your Mod can still load its configuration when MCU is not running.
 
-
 ### Supported types
 
 | JSON value type | UI control |
@@ -382,7 +387,6 @@ end)
 | String | Text input box |
 
 Unsupported types do not generate controls. When configuration is edited, unsupported entries are written back with their values unchanged; indentation and field order are not guaranteed to remain unchanged.
-
 
 ### Notes
 
