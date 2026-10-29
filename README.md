@@ -4,77 +4,7 @@ ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改
 
 下文的 `Mods/` 指 `PBZ/platform/steam/ue4ss/Mods/`。
 
-## 一，轻量接入：simple json
-
-### 你需要做什么
-
-1. 配置文件不存在时，由你的mod创建 `Mods/<ModName>/<ModName>.config.json`。其中`ModName` 必须与 Mod 安装文件夹名称一致。
-2. 由你的 Mod 自己读取配置文件。
-
-请只实现从默认值创建和读取操作，不要实现保存配置，以免和MCU保存的配置互相覆盖。
-
-### MCU会做什么
-MCU会读取按条件命名好的json配置文件,为其生成UI，并将用户修改后的配置保存回配置文件。
-
-**MCU 修改 JSON 文件后不会通知你的 Mod，也不会更新你的本地变量。 新的配置要么等重启Mod后生效，要么你自己轮询重新加载配置文件。**
-
-你的MOD可以不依赖MCU而运作，但是你需要使用json库实现json读取，MCU 提供了共享的 JSON 库。
-
-
-### 配置示例
-
-注意你最好让程序在不存在配置文件时根据默认值自动生成，而不要将配置文件打包进入MOD，因为这会覆盖用户的本地配置。
-```json
-{
-  "ShootDuration": 0.3,
-  "DamageColor": "#FFFFFF",
-  "Enabled": true,
-  "RectWidth": 150
-}
-```
-
-### 代码示例
-
-见 [simple 接入示例](MCUExample/platform/steam/ue4ss/Mods/MCUExample/Scripts/main.lua)。
-
-```lua
-local json = require("json")
-local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
-local config = {
-    BooleanValue = true,
-    NumberValue = 12.5,
-    TextValue = "Hello MCU",
-}
-
-for key, value in pairs(json.load(configPath) or {}) do
-    config[key] = value
-end
-json.dump(config, configPath)
-
-for key, value in pairs(config) do
-    print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
-end
-```
-
-
-### 支持的类型
-
-| JSON 值类型 | UI 控件 |
-| --- | --- |
-| 布尔值 | 开启 / 关闭选项 |
-| 有限数值 | 数字输入框 |
-| 字符串 | 文本输入框 |
-
-不支持的类型不会生成对应控件，修改配置时不支持的项目会保持原样写回，不保证缩进和字段顺序不变。
-
-
-### 注意事项
-
-- 对于此种接入方式，“恢复默认值”按钮会直接删除整个配置文件(包括不支持的字段)，并要求用户重启Mod，你的 Mod 应在启动时根据默认值创建配置文件以实现重置。
-- `json.load(path)` 在文件无法打开时返回 `nil`，解析失败会抛出异常；`json.dump(value, path)` 写入失败会抛出异常。
-- 当前共享 JSON 模块基于 David Heiko Kolf 的 dkjson 2.11（MIT 许可证），并提供 `load` / `dump` 文件辅助接口。
-
-## 二，高级接入： schema 配置（推荐）
+## 一，高级接入： schema 配置（推荐）
 
 ### 你需要做什么
 
@@ -114,15 +44,15 @@ local config, err = mcu.InitFromFile(schema)
 ```lua
 local schema = {
     updateInPlace = true, -- 可选，省略时为 true，名称区分大小写。
-    fields = { -- 必填，按顺序排列的字段定义。
+    fields = { -- 必填，有序数组，每个表示一个配置项
         {
-            key = "Count", -- 必填，配置键名，同一 schema 内不可重复。
-            type = "IntBox", -- 必填，控件类型。
-            label = "数量", -- 可选，省略时显示 key。
-            description = "要显示的数量", -- 可选，配置说明。
-            default = 12, -- 可选，须符合当前字段的类型和限制。
-            params = {min = 0, max = 100, step = 1}, -- 是否必填及具体内容取决于 type。
-            onchange = function(newValue, oldValue, fullConfig) -- 可选。
+            key = "Count",
+            type = "IntBox",
+            label = "数量",
+            description = "要显示的数量",
+            default = 12,
+            params = {min = 0, max = 100, step = 1},。
+            onchange = function(newValue, oldValue, fullConfig)
                 print(newValue)
             end,
         },
@@ -130,7 +60,7 @@ local schema = {
             key = "PrintConfig",
             type = "Button",
             label = "打印数量",
-            onclick = function(fullConfig) -- Button 必填。
+            onclick = function(fullConfig)
                 print(fullConfig.Count)
             end,
         },
@@ -138,11 +68,11 @@ local schema = {
 }
 ```
 
-`fields` 使用连续数组形式 `{字段1, 字段2, ...}`，不要写成 `{Count = {...}}`；每个字段都在自己的定义里填写 `key`。`onchange` 和 `onclick` 是 Lua 函数，放在对应字段内，不放在 schema 顶层。Button 不提供 `default` 或 `onchange`，其他类型不提供 `onclick`。不要手动填写 `schema.id`；控件类型、参数和默认值规则见后面的对应章节。
+`fields` 格式参考下方`支持的类型`章节，**注意fields是数组而非对象**
 
 参数:
 - `schema.fields`：必填，有序字段数组，具体格式见下文。
-- `schema.updateInPlace`：可选，默认为 `true`。 为true时， MCU会自动更新InitFromFile返回的config对象；为fales时则不会，此时你需要自己实现 `OnChange`以更新内存里的配置项 (配置文件仍然会照常自动保存)。
+- `schema.updateInPlace`：可选，默认为 `true`。 为true时， MCU会自动更新InitFromFile返回的config对象；为false时则不会，此时你需要自己实现 `OnChange`以更新内存里的配置项 (配置文件仍然会照常自动保存)。
 - Mod 名称从调用脚本所在的路径自动取得，即文件夹名=Mod名。
 - 成功返回只包含配置值的 `config`，例如 `config.Enabled`/ `config.interval`；失败返回 `nil, err`。
 - 初始化不触发 `onchange`。同一 Mod 多次调用初始化会替换此前的注册，旧配置对象不再用于主动保存。
@@ -197,6 +127,16 @@ local saved, err = mcu.ForceSaveConfig(config)
 
 ### 支持的类型
 
+#### fields 格式
+
+- **必填：`key`、`type`。** `key` 是配置键名，必须为非空字符串，在当前 schema 内唯一；`type` 指定控件类型。
+- **可选：`label`、`description`、`default`、`onchange`。** `label` 省略时使用 `key`；`description` 为说明；`default` 为默认值，不填时会自动推断；`onchange` 为回调。
+- **`params` 是否必填取决于控件类型**，见下表。
+
+`fields` 是有序数组，控件按声明顺序展示。默认值只需在这里定义一次。
+
+####
+
 | type | 控件 / 值类型 | params |
 | --- | --- | --- |
 | `BoolToggle` | 布尔二选一 | 无 |
@@ -208,7 +148,7 @@ local saved, err = mcu.ForceSaveConfig(config)
 | `IntSelect` | 整数选项 | 必填 `options` |
 | `FloatSelect` | 浮点数选项 | 必填 `options` |
 | `TextSelect` | 文本选项 | 必填 `options` |
-| `Button` | 操作按钮，不保存配置值 | 无 |
+| `Button` | 操作按钮，不保存配置值 | `onclick` |
 
 `options` 是非空数组，每项的 `value` 必填、`label` 可选，例如 `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`。保存的是 `value`，不是下标或显示文字。
 
@@ -218,14 +158,7 @@ local saved, err = mcu.ForceSaveConfig(config)
 
 建议明确写出符合限制的 `default`。省略时会自动推导：布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围和步长推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
 
-### fields 的必填项与可选项
 
-- **必填：`key`、`type`。** `key` 是配置键名，必须为非空字符串，在当前 schema 内唯一；`type` 指定控件类型。
-- **可选：`label`、`description`、`default`、`onchange`。** `label` 省略时使用 `key`；`description` 为说明；`default` 为默认值；`onchange` 为该字段变化后的回调。
-- **`params` 是否必填取决于控件类型**，见下表。
-- **Button 必须提供 `onclick`，不能提供 `default` 或 `onchange`。** 其他类型不能提供 `onclick`。
-
-`fields` 是有序数组，控件按声明顺序展示。默认值只需在这里定义一次。
 
 
 ### 完整代码示例
@@ -361,3 +294,73 @@ end
 - 不随你的 Mod 分发共享模块的重复副本，也不分发运行时生成的 `.schemaconfig.json`。
 - Schema 支持单项和全部恢复默认值，会保存恢复后的配置，并对实际变化的字段触发回调。
 - MCU 自身文字跟随游戏语言；你提供的 `label`、`description` 和选项文字不会被自动翻译。
+
+## 二，轻量接入：simple json
+
+### 你需要做什么
+
+1. 配置文件不存在时，由你的mod创建 `Mods/<ModName>/<ModName>.config.json`。其中`ModName` 必须与 Mod 安装文件夹名称一致。
+2. 由你的 Mod 自己读取配置文件。
+
+请只实现从默认值创建和读取操作，不要实现保存配置，以免和MCU保存的配置互相覆盖。
+
+### MCU会做什么
+MCU会读取按条件命名好的json配置文件,为其生成UI，并将用户修改后的配置保存回配置文件。
+
+**MCU 修改 JSON 文件后不会通知你的 Mod，也不会更新你的本地变量。 新的配置要么等重启Mod后生效，要么你自己轮询重新加载配置文件。**
+
+你的MOD可以不依赖MCU而运作，但是你需要使用json库实现json读取，MCU 提供了共享的 JSON 库。
+
+
+### 配置示例
+
+注意你最好让程序在不存在配置文件时根据默认值自动生成，而不要将配置文件打包进入MOD，因为这会覆盖用户的本地配置。
+```json
+{
+  "ShootDuration": 0.3,
+  "DamageColor": "#FFFFFF",
+  "Enabled": true,
+  "RectWidth": 150
+}
+```
+
+### 代码示例
+
+见 [simple 接入示例](MCUExample/platform/steam/ue4ss/Mods/MCUExample/Scripts/main.lua)。
+
+```lua
+local json = require("json")
+local configPath = "../../../platform/steam/ue4ss/Mods/MyMod/MyMod.config.json"
+local config = {
+    BooleanValue = true,
+    NumberValue = 12.5,
+    TextValue = "Hello MCU",
+}
+
+for key, value in pairs(json.load(configPath) or {}) do
+    config[key] = value
+end
+json.dump(config, configPath)
+
+for key, value in pairs(config) do
+    print("[MyMod] " .. key .. " = " .. tostring(value) .. "\n")
+end
+```
+
+
+### 支持的类型
+
+| JSON 值类型 | UI 控件 |
+| --- | --- |
+| 布尔值 | 开启 / 关闭选项 |
+| 有限数值 | 数字输入框 |
+| 字符串 | 文本输入框 |
+
+不支持的类型不会生成对应控件，修改配置时不支持的项目会保持原样写回，不保证缩进和字段顺序不变。
+
+
+### 注意事项
+
+- 对于此种接入方式，“恢复默认值”按钮会直接删除整个配置文件(包括不支持的字段)，并要求用户重启Mod，你的 Mod 应在启动时根据默认值创建配置文件以实现重置。
+- `json.load(path)` 在文件无法打开时返回 `nil`，解析失败会抛出异常；`json.dump(value, path)` 写入失败会抛出异常。
+- 当前共享 JSON 模块基于 David Heiko Kolf 的 dkjson 2.11（MIT 许可证），并提供 `load` / `dump` 文件辅助接口。
