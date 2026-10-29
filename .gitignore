@@ -1,0 +1,22 @@
+# Local instructions and task lists at any depth.
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+[Tt][Oo][Dd][Oo].[Mm][Dd]
+
+# Local cover artwork is never tracked.
+/cover/
+
+# Temporary artifacts must never be published or tracked.
+_temp/
+
+# Local game dumps and generated SDKs.
+/Dump/
+
+# Local tool installations and downloaded UE4SS distributions.
+/_tools/
+/UE4SS_v*/
+/UE4SS_v*.zip
+/zDEV-UE4SS_v*.zip
+/userUE4SS/
+
+# Downloaded reference mod used for local research.
+/PalWorld-DekMCM-577-1-9-1736531951/
