@@ -1,0 +1,48 @@
+{
+  "fields": {
+    "GeneralSection": { "label": "General Settings" },
+    "Enabled": {
+      "label": "Boolean Toggle",
+      "description": "Choose On or Off. Changes print the configuration."
+    },
+    "IntegerValue": {
+      "label": "Integer Input",
+      "description": "Enter an integer. Press Enter or leave the field to save."
+    },
+    "FloatValue": {
+      "label": "Decimal Input",
+      "description": "Enter a decimal number without a step restriction. Press Enter or leave the field to save."
+    },
+    "IntegerSlider": {
+      "label": "Integer Slider",
+      "description": "Drag to choose an integer in steps of 5. Release to save and print the configuration."
+    },
+    "FloatSlider": {
+      "label": "Decimal Slider",
+      "description": "Choose a value from 0 to 1 in steps of 0.1."
+    },
+    "TextValue": {
+      "label": "Text Input",
+      "description": "Enter up to 40 characters. Press Enter or leave the field to save."
+    },
+    "IntegerChoice": {
+      "label": "Integer Choice",
+      "description": "Choose Low, Medium or High. The saved value is 1, 2 or 3.",
+      "options": [{ "value": 1, "label": "Low" }, { "value": 2, "label": "Medium" }, { "value": 3, "label": "High" }]
+    },
+    "FloatChoice": {
+      "label": "Decimal Choice",
+      "description": "Choose a multiplier. The saved value is the corresponding number.",
+      "options": [{ "value": 0.5, "label": "Half" }, { "value": 1.0, "label": "Normal" }, { "value": 1.5, "label": "One and a Half" }]
+    },
+    "TextChoice": {
+      "label": "Text Choice",
+      "description": "Choose a display mode. The saved value is compact, normal or large.",
+      "options": [{ "value": "compact", "label": "Compact" }, { "value": "normal", "label": "Normal" }, { "value": "large", "label": "Large" }]
+    },
+    "TriggerSomething": {
+      "label": "This is a button",
+      "description": "Print the current configuration without changing any values."
+    }
+  }
+}
