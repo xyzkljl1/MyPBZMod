@@ -7,6 +7,7 @@
 
 # Temporary artifacts must never be published or tracked.
 _temp/
+/test/
 
 # Local game dumps and generated SDKs.
 /Dump/
@@ -18,5 +19,5 @@ _temp/
 /zDEV-UE4SS_v*.zip
 /userUE4SS/
 
-# Downloaded reference mod used for local research.
-/PalWorld-DekMCM-577-1-9-1736531951/
+# Runtime schema configuration values are not release payloads.
+/ModConfigUI/platform/steam/ue4ss/Mods/ModConfigUI/configs/

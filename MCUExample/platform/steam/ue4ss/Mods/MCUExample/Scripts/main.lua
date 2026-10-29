@@ -1,5 +1,5 @@
 local json = require("json")
-local configPath = "ue4ss/Mods/MCUExample/MCUExample.config.json"
+local configPath = "../../../platform/steam/ue4ss/Mods/MCUExample/MCUExample.config.json"
 local config = {
     BooleanValue = true,
     NumberValue = 12.5,
