@@ -1,0 +1,28 @@
+{
+  "fields": {
+    "DisplaySection": { "label": "显示设置" },
+    "Enabled": { "label": "启用伤害数字" },
+    "MaxNumbers": { "label": "同时显示的数字上限" },
+    "FontSection": { "label": "字体与颜色" },
+    "FontSize": { "label": "伤害字号" },
+    "HealFontSize": { "label": "治疗字号" },
+    "EnemyFontScale": { "label": "敌人数字缩放" },
+    "PlayerFontScale": { "label": "玩家数字缩放" },
+    "DamageColor": { "label": "伤害颜色", "description": "十六进制颜色，例如 #FFFFFF。" },
+    "HealColor": { "label": "治疗颜色", "description": "十六进制颜色，例如 #00FF00。" },
+    "AnimationSection": { "label": "动画" },
+    "DisplaySeconds": { "label": "显示时长（秒）" },
+    "ShootDuration": { "label": "弹出时长（秒）" },
+    "FadeOutDuration": { "label": "淡出时长（秒）" },
+    "InitialScale": { "label": "初始缩放" },
+    "LayoutSection": { "label": "位置与布局" },
+    "RectHalfWidth": { "label": "分布区域半宽" },
+    "RectHalfHeight": { "label": "分布区域半高" },
+    "XBaseOffset": { "label": "水平基础偏移" },
+    "YBaseOffset": { "label": "垂直基础偏移" },
+    "YStepSize": { "label": "纵向步距" },
+    "RandomJitterX": { "label": "水平随机扰动" },
+    "RandomJitterY": { "label": "垂直随机扰动" },
+    "MinPadding": { "label": "最小间距" }
+  }
+}
