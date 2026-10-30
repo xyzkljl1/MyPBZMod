@@ -14,7 +14,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
-#include "Kismet/KismetArrayLibrary.h"
+#include "Kismet/BlueprintMapLibrary.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
@@ -26,7 +26,6 @@
 #include "GameplayTagsManager.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_CallArrayFunction.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_VariableGet.h"
@@ -102,8 +101,7 @@ struct Graph
     UK2Node_CallFunction* Call(UClass* C, FName Name, Pin Target = nullptr)
     {
         auto* F = C->FindFunctionByName(Name); checkf(F, TEXT("Missing function %s:%s"), *C->GetName(), *Name.ToString());
-        auto* N = C == UKismetArrayLibrary::StaticClass() ? static_cast<UK2Node_CallFunction*>(Node<UK2Node_CallArrayFunction>(G))
-            : Node<UK2Node_CallFunction>(G);
+        auto* N = Node<UK2Node_CallFunction>(G);
         N->SetFromFunction(F); N->AllocateDefaultPins();
         if (Target) Link(Target, N->FindPinChecked(Schema::PN_Self));
         return N;
@@ -220,11 +218,13 @@ void BuildGraphs(UBlueprint* BP)
     Var(BP, "InputSubsystem", ObjectType(UEnhancedInputLocalPlayerSubsystem::StaticClass()));
     Var(BP, "SwitchAction", ObjectType(UInputAction::StaticClass()));
     for (auto Name : {"ShachiWatcher", "MaxWatcher"}) Var(BP, Name, ObjectType(UAbilityAsync_WaitAttributeChanged::StaticClass()));
-    auto Watchers = ObjectType(UAbilityAsync_WaitGameplayTagRemoved::StaticClass()); Watchers.ContainerType = EPinContainerType::Array;
+    auto Watchers = StructType(FGameplayTag::StaticStruct()); Watchers.ContainerType = EPinContainerType::Map;
+    Watchers.PinValueType.TerminalCategory = Schema::PC_Object;
+    Watchers.PinValueType.TerminalSubCategoryObject = UAbilityAsync_WaitGameplayTagRemoved::StaticClass();
     Var(BP, "AttackWatchers", Watchers);
     Var(BP, "AttackRoots", StructType(FGameplayTagContainer::StaticStruct()),
         TEXT("(GameplayTags=((TagName=\"Ability.Action.Hun.Heavy\"),(TagName=\"Ability.Action.Hun.Light\")))"));
-    for (auto Name : {"ProtectedAttacks", "CandidateAttacks", "OtherAttacks"}) Var(BP, Name, StructType(FGameplayTagContainer::StaticStruct()));
+    for (auto Name : {"ProtectedAttacks", "CandidateAttacks", "OtherAttacks", "ProtectionSnapshot"}) Var(BP, Name, StructType(FGameplayTagContainer::StaticStruct()));
     for (auto Pair : {TPair<FName, FName>("ShachiAttribute", "Shachi"), {"MaxAttribute", "Shachi_Max"}, {"HealthAttribute", "Health"}})
     {
         FGameplayAttribute Attribute(FindFProperty<FProperty>(UBasicAttributeSet::StaticClass(), Pair.Value));
@@ -239,9 +239,9 @@ void BuildGraphs(UBlueprint* BP)
     TMap<FName, UK2Node_FunctionEntry*> Functions;
     for (auto Name : {"Initialize", "Shutdown", "StopWatcher", "UnbindState", "QueueEvaluate", "Evaluate", "FinishInput",
         "PostBeginPlay", "PreBeginPlay", "StopMod", "UnbindGameInstance", "UnbindPawn", "QueueResolve", "ResolvePlayer",
-        "CapturePaidAttacks", "CaptureAttackTag", "RebuildProtection", "AddAttackWatcher", "StopAttackWatchers"})
+        "CapturePaidAttacks", "CaptureAttackTag", "PruneProtection", "RemoveEndedAttack", "AddAttackWatcher", "StopAttackWatchers"})
         Functions.Add(Name, Function(BP, Name));
-    for (auto Name : {"CaptureAttackTag", "AddAttackWatcher"})
+    for (auto Name : {"CaptureAttackTag", "AddAttackWatcher", "RemoveEndedAttack"})
         Functions[Name]->CreateUserDefinedPin("Tag", StructType(FGameplayTag::StaticStruct()), EGPD_Output);
     auto* Initialize = Functions["Initialize"];
     for (auto Pair : {TPair<FName, UClass*>("Pawn", APawn::StaticClass()), {"PlayerController", APlayerController::StaticClass()},
@@ -252,6 +252,7 @@ void BuildGraphs(UBlueprint* BP)
     auto* Changed = FindFProperty<FMulticastDelegateProperty>(UAbilityAsync_WaitAttributeChanged::StaticClass(), "Changed");
     auto* Ended = FindFProperty<FMulticastDelegateProperty>(UActorStateComponent::StaticClass(), "OnStateEnd");
     Functions.Add("ResourceChanged", Function(BP, "ResourceChanged", Changed->SignatureFunction));
+    Functions.Add("RecordResourceCost", Function(BP, "RecordResourceCost", Changed->SignatureFunction));
     Functions.Add("StateEnded", Function(BP, "StateEnded", Ended->SignatureFunction));
     auto* Possession = FindFProperty<FMulticastDelegateProperty>(UGameInstance::StaticClass(), "OnPawnControllerChangedDelegates");
     auto* Restart = FindFProperty<FMulticastDelegateProperty>(APawn::StaticClass(), "ReceiveRestartedDelegate");
@@ -273,7 +274,7 @@ void BuildGraphs(UBlueprint* BP)
         G.Set("Ready", nullptr, "false"); G.ClearTimer("Evaluate"); G.ClearTimer("FinishInput");
         for (auto Name : {"ShachiWatcher", "MaxWatcher"})
         { auto* N = G.Local("StopWatcher"); Link(G.Get(Name), N->FindPinChecked(FName("Watcher"))); G.Run(N); G.Set(Name); }
-        G.Run(G.Local("StopAttackWatchers")); G.Set("ProtectedAttacks"); G.Set("CandidateAttacks"); G.Set("OtherAttacks");
+        G.Run(G.Local("StopAttackWatchers")); G.Set("ProtectedAttacks"); G.Set("CandidateAttacks"); G.Set("OtherAttacks"); G.Set("ProtectionSnapshot");
         G.Run(G.Local("UnbindState"));
         for (auto Name : {"PlayerPawn", "Controller", "Weapons", "States", "InputSubsystem", "SwitchAction"}) G.Set(Name);
         G.Set("Queued", nullptr, "false"); G.Set("InputInFlight", nullptr, "false");
@@ -297,7 +298,15 @@ void BuildGraphs(UBlueprint* BP)
     }
     { Graph G(Functions["StateEnded"]); G.Run(G.Local("QueueEvaluate")); }
     {
-        Graph G(Functions["ResourceChanged"]); G.Run(G.Local("QueueEvaluate")); G.Guard(G.Get("Ready"));
+        Graph G(Functions["ResourceChanged"]); G.Guard(G.Get("Ready"));
+        auto* Record = G.Local("RecordResourceCost");
+        for (auto Name : {"Attribute", "NewValue", "OldValue"}) Link(G.Entry->FindPinChecked(FName(Name)), Record->FindPinChecked(FName(Name)));
+        G.Run(Record); G.Run(G.Local("QueueEvaluate"));
+    }
+    {
+        // Record costs even above the switching threshold; a later cost or maximum
+        // change can take this same attack below it before the attack has finished.
+        Graph G(Functions["RecordResourceCost"]);
         auto* IsShachi = G.Call(UAbilitySystemBlueprintLibrary::StaticClass(), "EqualEqual_GameplayAttributeGameplayAttribute");
         Link(G.Entry->FindPinChecked(FName("Attribute")), IsShachi->FindPinChecked(FName("AttributeA")));
         Link(G.Get("ShachiAttribute"), IsShachi->FindPinChecked(FName("AttributeB"))); G.Guard(IsShachi->GetReturnValuePin());
@@ -310,12 +319,15 @@ void BuildGraphs(UBlueprint* BP)
         Link(G.OwnedTags(), Filter->FindPinChecked(FName("TagContainer")));
         Link(G.Get("AttackRoots"), Filter->FindPinChecked(FName("OtherContainer")));
         Value(Filter->FindPinChecked(FName("bExactMatch")), "false"); G.Set("CandidateAttacks", Filter->GetReturnValuePin());
-        G.ForEach(G.TagArray("CandidateAttacks"), "CaptureAttackTag", "Tag"); G.Run(G.Local("RebuildProtection"));
+        G.ForEach(G.TagArray("CandidateAttacks"), "CaptureAttackTag", "Tag");
     }
     {
         // Keep concrete attack tags, not their shared Heavy/Light ancestors. Otherwise
         // an overlapping free follow-up would inherit protection from the paid attack.
         Graph G(Functions["CaptureAttackTag"]); auto Tag = G.Entry->FindPinChecked(FName("Tag"));
+        auto* Existing = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "HasTag");
+        Link(G.Get("ProtectedAttacks"), Existing->FindPinChecked(FName("TagContainer"))); Link(Tag, Existing->FindPinChecked(FName("Tag")));
+        Value(Existing->FindPinChecked(FName("bExactMatch")), "true"); G.Guard(Existing->GetReturnValuePin(), false);
         G.Set("OtherAttacks", G.Get("CandidateAttacks"));
         auto* Remove = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "RemoveGameplayTag");
         Link(G.Get("OtherAttacks"), Remove->FindPinChecked(FName("TagContainer"))); Link(Tag, Remove->FindPinChecked(FName("Tag"))); G.Run(Remove);
@@ -324,33 +336,56 @@ void BuildGraphs(UBlueprint* BP)
         Value(HasChild->FindPinChecked(FName("bExactMatch")), "false"); G.Guard(HasChild->GetReturnValuePin(), false);
         auto* Add = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "AddGameplayTag");
         Link(G.Get("ProtectedAttacks"), Add->FindPinChecked(FName("TagContainer"))); Link(Tag, Add->FindPinChecked(FName("Tag"))); G.Run(Add);
+        auto* Watch = G.Local("AddAttackWatcher"); Link(Tag, Watch->FindPinChecked(FName("Tag"))); G.Run(Watch);
     }
     {
-        Graph G(Functions["StopAttackWatchers"]); G.ForEach(G.Get("AttackWatchers"), "StopWatcher", "Watcher");
-        auto* Clear = G.Call(UKismetArrayLibrary::StaticClass(), "Array_Clear"); Link(G.Get("AttackWatchers"), Clear->FindPinChecked(FName("TargetArray"))); G.Run(Clear);
+        Graph G(Functions["StopAttackWatchers"]);
+        auto* Values = G.Call(UBlueprintMapLibrary::StaticClass(), "Map_Values"); Link(G.Get("AttackWatchers"), Values->FindPinChecked(FName("TargetMap")));
+        G.Run(Values);
+        G.ForEach(Values->FindPinChecked(FName("Values")), "StopWatcher", "Watcher");
+        auto* Clear = G.Call(UBlueprintMapLibrary::StaticClass(), "Map_Clear"); Link(G.Get("AttackWatchers"), Clear->FindPinChecked(FName("TargetMap"))); G.Run(Clear);
     }
     {
-        // This callback runs synchronously on tag removal, before a later attack can
-        // re-add the same tag. Rebuild only on events; ended listeners never accumulate.
-        Graph G(Functions["RebuildProtection"]); G.Guard(G.Get("Ready")); G.Run(G.Local("StopAttackWatchers"));
-        auto* Filter = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "Filter");
-        Link(G.Get("ProtectedAttacks"), Filter->FindPinChecked(FName("TagContainer")));
-        Link(G.OwnedTags(), Filter->FindPinChecked(FName("OtherContainer")));
-        Value(Filter->FindPinChecked(FName("bExactMatch")), "true"); G.Set("ProtectedAttacks", Filter->GetReturnValuePin());
-        G.ForEach(G.TagArray("ProtectedAttacks"), "AddAttackWatcher", "Tag"); G.Run(G.Local("QueueEvaluate"));
+        // Synchronous removal prevents a same-tag free follow-up inheriting protection.
+        // Iterate a snapshot because RemoveEndedAttack mutates ProtectedAttacks.
+        Graph G(Functions["PruneProtection"]); G.Guard(G.Get("Ready")); G.Set("ProtectionSnapshot", G.Get("ProtectedAttacks"));
+        G.ForEach(G.TagArray("ProtectionSnapshot"), "RemoveEndedAttack", "Tag"); G.Set("ProtectionSnapshot");
+        G.Run(G.Local("QueueEvaluate"));
+    }
+    {
+        Graph G(Functions["RemoveEndedAttack"]); auto Tag = G.Entry->FindPinChecked(FName("Tag"));
+        auto* Active = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "HasTag");
+        Link(G.OwnedTags(), Active->FindPinChecked(FName("TagContainer"))); Link(Tag, Active->FindPinChecked(FName("Tag")));
+        Value(Active->FindPinChecked(FName("bExactMatch")), "true"); G.Guard(Active->GetReturnValuePin(), false);
+        auto* Find = G.Call(UBlueprintMapLibrary::StaticClass(), "Map_Find");
+        Link(G.Get("AttackWatchers"), Find->FindPinChecked(FName("TargetMap"))); Link(Tag, Find->FindPinChecked(FName("Key")));
+        auto* Stop = G.Local("StopWatcher"); Link(Find->FindPinChecked(FName("Value")), Stop->FindPinChecked(FName("Watcher"))); G.Run(Stop);
+        auto* Remove = G.Call(UBlueprintMapLibrary::StaticClass(), "Map_Remove");
+        Link(G.Get("AttackWatchers"), Remove->FindPinChecked(FName("TargetMap"))); Link(Tag, Remove->FindPinChecked(FName("Key"))); G.Run(Remove);
+        auto* RemoveTag = G.Call(UBlueprintGameplayTagLibrary::StaticClass(), "RemoveGameplayTag");
+        Link(G.Get("ProtectedAttacks"), RemoveTag->FindPinChecked(FName("TagContainer"))); Link(Tag, RemoveTag->FindPinChecked(FName("Tag"))); G.Run(RemoveTag);
     }
     {
         Graph G(Functions["AddAttackWatcher"]);
         auto* N = G.Call(UAbilityAsync_WaitGameplayTagRemoved::StaticClass(), "WaitGameplayTagRemoveFromActor");
         Link(G.Get("PlayerPawn"), N->FindPinChecked(FName("TargetActor"))); Link(G.Entry->FindPinChecked(FName("Tag")), N->FindPinChecked(FName("Tag")));
         Value(N->FindPinChecked(FName("OnlyTriggerOnce")), "true"); G.Run(N);
-        auto* Add = G.Call(UKismetArrayLibrary::StaticClass(), "Array_Add"); Link(G.Get("AttackWatchers"), Add->FindPinChecked(FName("TargetArray")));
-        Link(N->GetReturnValuePin(), Add->FindPinChecked(FName("NewItem"))); G.Run(Add);
-        G.Delegate(UAbilityAsync_WaitGameplayTagRemoved::StaticClass(), "Removed", N->GetReturnValuePin(), "RebuildProtection", true);
+        auto* Add = G.Call(UBlueprintMapLibrary::StaticClass(), "Map_Add"); Link(G.Get("AttackWatchers"), Add->FindPinChecked(FName("TargetMap")));
+        Link(G.Entry->FindPinChecked(FName("Tag")), Add->FindPinChecked(FName("Key")));
+        Link(N->GetReturnValuePin(), Add->FindPinChecked(FName("Value"))); G.Run(Add);
+        G.Delegate(UAbilityAsync_WaitGameplayTagRemoved::StaticClass(), "Removed", N->GetReturnValuePin(), "PruneProtection", true);
         G.Run(G.Call(UBlueprintAsyncActionBase::StaticClass(), "Activate", N->GetReturnValuePin()));
     }
     {
         Graph G(Functions["QueueEvaluate"]); G.Guard(G.Get("Ready")); G.Guard(G.Get("Enabled")); G.Guard(G.Get("Queued"), false);
+        // Skip timer scheduling while resource is sufficient. Evaluate still reads
+        // fresh values, so an already queued check cannot use a stale low ratio.
+        G.Guard(G.Valid(G.Get("PlayerPawn")));
+        auto* Maximum = G.Attribute("MaxAttribute"); G.Guard(Maximum->FindPinChecked(FName("bSuccessfullyFoundAttribute")));
+        G.Guard(G.Math("Greater_DoubleDouble", Maximum->GetReturnValuePin(), nullptr, "0.0"));
+        auto* Current = G.Attribute("ShachiAttribute"); G.Guard(Current->FindPinChecked(FName("bSuccessfullyFoundAttribute")));
+        G.Guard(G.Math("Less_DoubleDouble", G.Math("Multiply_DoubleDouble", Current->GetReturnValuePin(), nullptr, "100.0"),
+            G.Math("Multiply_DoubleDouble", Maximum->GetReturnValuePin(), G.Get("ThresholdPercent"))));
         G.Set("Queued", nullptr, "true"); G.Timer("Evaluate", nullptr, "0.001");
     }
     {
@@ -522,10 +557,15 @@ bool TestBlueprint(UBlueprint* BP)
     auto Check = [&](bool OK, const TCHAR* Description) { if (!OK) UE_LOG(LogTemp, Error, TEXT("ASW_TEST_FAILED: %s"), Description); return OK; };
     Actor->ProcessEvent(Actor->FindFunctionChecked("Initialize"), &Init); Drain();
     if (!Check(FindFProperty<FBoolProperty>(Actor->GetClass(), "Ready")->GetPropertyValue_InContainer(Actor)
-        && Count() == 1, TEXT("Blueprint initialized and evaluated"))) return false;
+        && Count() == 0, TEXT("Blueprint initialized without scheduling a full-resource evaluation"))) return false;
     if (!Check(Input->Requests == 0, TEXT("initial full resource"))) return false;
     const int32 IdleCount = Count(); for (int32 I=0; I<200; ++I) Step();
     if (!Check(Count() == IdleCount && !Actor->PrimaryActorTick.bCanEverTick, TEXT("no idle polling or actor tick"))) return false;
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 40); Drain();
+    for (float Value = 41; Value <= 100; ++Value) { Pawn->ASC->SetNumericAttributeBase(Shachi, Value); Drain(); }
+    if (!Check(Count() == IdleCount, TEXT("60 above-threshold recovery events schedule zero evaluations"))) return false;
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 29); Pawn->ASC->SetNumericAttributeBase(Shachi, 100); Drain();
+    if (!Check(Count() == IdleCount + 1 && Input->Requests == 0, TEXT("pending evaluation reads recovered resource"))) return false;
     Pawn->ASC->SetNumericAttributeBase(Shachi, 30); Drain();
     if (!Check(Input->Requests == 0, TEXT("strictly below 30 percent"))) return false;
     const auto HeavyAttack = FGameplayTag::RequestGameplayTag("Ability.Action.Hun.Heavy.Atk01");
@@ -534,11 +574,23 @@ bool TestBlueprint(UBlueprint* BP)
     const auto LightAttack = FGameplayTag::RequestGameplayTag("Ability.Action.Hun.Light.A.Normal");
     auto ProtectedCount = [&]() { return FindFProperty<FStructProperty>(Actor->GetClass(), "ProtectedAttacks")
         ->ContainerPtrToValuePtr<FGameplayTagContainer>(Actor)->Num(); };
-    auto WatcherCount = [&]() { auto* P = FindFProperty<FArrayProperty>(Actor->GetClass(), "AttackWatchers");
-        return FScriptArrayHelper(P, P->ContainerPtrToValuePtr<void>(Actor)).Num(); };
+    auto WatcherCount = [&]() { auto* P = FindFProperty<FMapProperty>(Actor->GetClass(), "AttackWatchers");
+        return FScriptMapHelper(P, P->ContainerPtrToValuePtr<void>(Actor)).Num(); };
+    auto WatcherFor = [&](FGameplayTag Tag) -> UObject* {
+        auto* P = FindFProperty<FMapProperty>(Actor->GetClass(), "AttackWatchers");
+        FScriptMapHelper Map(P, P->ContainerPtrToValuePtr<void>(Actor));
+        int32 Index = Map.FindMapIndexWithKey(&Tag);
+        return Index == INDEX_NONE ? nullptr : CastFieldChecked<FObjectPropertyBase>(P->ValueProp)->GetObjectPropertyValue(Map.GetValuePtr(Index));
+    };
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 60); Drain();
     Pawn->ASC->AddLooseGameplayTag(HeavyRoot); Pawn->ASC->AddLooseGameplayTag(HeavyAttack);
+    const int32 BeforeHighCost = Count();
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 50); Drain();
+    auto* HighCostWatcher = WatcherFor(HeavyAttack);
+    if (!Check(Count() == BeforeHighCost && ProtectedCount() == 1 && HighCostWatcher,
+        TEXT("above-threshold spending records protection without scheduling evaluation"))) return false;
     Pawn->ASC->SetNumericAttributeBase(Shachi, 29); Drain();
-    if (!Check(Input->Requests == 0 && ProtectedCount() == 1 && WatcherCount() == 1,
+    if (!Check(Input->Requests == 0 && ProtectedCount() == 1 && WatcherCount() == 1 && WatcherFor(HeavyAttack) == HighCostWatcher,
         TEXT("actual spending protects concrete attack, excluding its ancestor"))) return false;
     States->OnStateEnd.Broadcast({}, {}); Drain();
     if (!Check(Input->Requests == 0, TEXT("intermediate state-end cannot interrupt paid attack"))) return false;
@@ -588,10 +640,18 @@ bool TestBlueprint(UBlueprint* BP)
     if (!Check(Input->Requests == 7 && ProtectedCount() == 0, TEXT("same-tag free follow-up does not retain stale protection"))) return false;
     Step(0.2f); Pawn->ASC->RemoveLooseGameplayTag(LightAttack); Drain();
     Pawn->ASC->AddLooseGameplayTag(HeavyAttack);
-    for (float Value : {18.f, 17.f, 16.f}) Pawn->ASC->SetNumericAttributeBase(Shachi, Value);
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 18);
+    auto* OriginalWatcher = WatcherFor(HeavyAttack);
+    for (float Value : {17.f, 16.f}) Pawn->ASC->SetNumericAttributeBase(Shachi, Value);
     Drain();
-    if (!Check(Input->Requests == 7 && ProtectedCount() == 1 && WatcherCount() == 1,
-        TEXT("repeated costs do not duplicate or accumulate watchers"))) return false;
+    if (!Check(Input->Requests == 7 && ProtectedCount() == 1 && WatcherCount() == 1 && OriginalWatcher && WatcherFor(HeavyAttack) == OriginalWatcher,
+        TEXT("repeated costs reuse the identical watcher object"))) return false;
+    Pawn->ASC->AddLooseGameplayTag(LightAttack); Pawn->ASC->SetNumericAttributeBase(Shachi, 15); Drain();
+    if (!Check(Input->Requests == 7 && WatcherCount() == 2 && WatcherFor(HeavyAttack) == OriginalWatcher,
+        TEXT("new overlapping paid attack adds only its own watcher"))) return false;
+    Pawn->ASC->RemoveLooseGameplayTag(LightAttack); Drain();
+    if (!Check(Input->Requests == 7 && WatcherCount() == 1 && ProtectedCount() == 1 && WatcherFor(HeavyAttack) == OriginalWatcher,
+        TEXT("ending one paid attack preserves the other watcher"))) return false;
     Invoke("Shutdown"); Pawn->ASC->RemoveLooseGameplayTag(HeavyAttack);
     if (!Check(ProtectedCount() == 0 && WatcherCount() == 0, TEXT("shutdown clears attack protection"))) return false;
     Actor->ProcessEvent(Actor->FindFunctionChecked("Initialize"), &Init); Drain();
@@ -605,7 +665,7 @@ bool TestBlueprint(UBlueprint* BP)
     const int32 StoppedCount = Count(); for (int32 I=0; I<100; ++I) Step();
     if (!Check(Input->Requests == 8 && Count() == StoppedCount, TEXT("shutdown removes delegates and timers"))) return false;
     Actor->Destroy();
-    UE_LOG(LogTemp, Display, TEXT("ASW_BLUEPRINT_TESTS_PASS: actual cost protection, free light/heavy attacks, overlapping/same-tag free follow-up, recovery, maximum, repeated costs, cooldown, threshold, idle, reinit, shutdown"));
+    UE_LOG(LogTemp, Display, TEXT("ASW_BLUEPRINT_TESTS_PASS: recovery filtering, fresh queued evaluation, high-resource cost capture, identical watcher reuse, incremental watcher removal, actual cost protection, free follow-up, maximum, cooldown, threshold, idle, reinit, shutdown"));
     return true;
 }
 
