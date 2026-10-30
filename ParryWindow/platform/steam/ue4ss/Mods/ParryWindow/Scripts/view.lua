@@ -4,7 +4,7 @@ local M = {}
 local FIXED_WIDTH, FRAME_WIDTH = 416, 4
 local shellPath = '/Game/PBZContent/UI/Settings/Editors/W_SettingsListEntry_Collection_Category.W_SettingsListEntry_Collection_Category_C'
 local colors = {
-    past = {R=.008,G=.008,B=.008,A=.9}, ahead = {R=.09,G=.09,B=.09,A=1},
+    past = {R=.008,G=.008,B=.008,A=.9}, ahead = {R=1,G=1,B=1,A=1},
     hit = {R=1,G=1,B=1,A=1},
     window = {R=.12,G=.9,B=.015,A=1},
     redWindow = {R=1,G=.04,B=.025,A=1},
@@ -63,6 +63,7 @@ function M.create(pawn, controller)
         local canvas = native(tree, 'CanvasPanel')
         tree.RootWidget = canvas
         local panel = native(tree, 'CanvasPanel')
+        panel:SetRenderTransformPivot({X=.5,Y=.5})
         local anchor = place(canvas, panel, 0, 0, 420, 34)
         anchor:SetAnchors({Minimum={X=.5,Y=.78},Maximum={X=.5,Y=.78}})
         anchor:SetAlignment({X=.5,Y=0})
@@ -95,13 +96,21 @@ function M.create(pawn, controller)
     return self
 end
 
-function M.render(self,sample,mode,offsetX,offsetY)
+function M.render(self,sample,mode,offsetX,offsetY,rotate,now)
     local row = self.rows[1]
     if not sample or not sample.totalFrames then
         if row.visible then row.panel:SetVisibility(1); row.visible=false end
         return
     end
     if not row.visible then row.panel:SetVisibility(3); row.visible=true end
+    local angle=0
+    if rotate then
+        row.rotationStart=row.rotationStart or now
+        angle=((now-row.rotationStart)*30)%360
+    else
+        row.rotationStart=nil
+    end
+    if row.angle~=angle then row.panel:SetRenderTransformAngle(angle); row.angle=angle end
     offsetX,offsetY=offsetX or 0,offsetY or 0
     if row.offsetX~=offsetX or row.offsetY~=offsetY then
         row.anchor:SetPosition({X=offsetX,Y=offsetY})

@@ -13,6 +13,8 @@ local config, configError = require('mcu_core').InitFromFile({
             description='Horizontal UI offset. Positive moves right; negative moves left.'},
         {key='offsetY',type='IntBox',label='offsetY',default=0,
             description='Vertical UI offset. Positive moves down; negative moves up.'},
+        {key='Rotate',type='BoolToggle',label='Rotate',default=false,
+            description='Rotate the entire bar, including text and cursor, at 30 degrees per second.'},
     },
 })
 if not config then print('[ParryWindow] '..tostring(configError)..'\n'); return end
@@ -133,7 +135,7 @@ local function renderCombo(combos,now,seconds,fps,baseSeconds)
             if not seen[key] then seen[key]=true; nativeFrames[#nativeFrames+1]=real end
         end
     end
-    view.render(hud,timeline.sample(combo,now,baseSeconds,fps,nativeFrames,seconds,displayTrack),config.BarWidthMode,config.offsetX,config.offsetY)
+    view.render(hud,timeline.sample(combo,now,baseSeconds,fps,nativeFrames,seconds,displayTrack),config.BarWidthMode,config.offsetX,config.offsetY,config.Rotate,now)
 end
 
 local function update()
