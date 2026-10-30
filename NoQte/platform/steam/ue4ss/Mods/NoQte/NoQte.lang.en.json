@@ -1,0 +1,12 @@
+{
+  "fields": {
+    "SkipQTE": {
+      "label": "Skip QTEs",
+      "description": "Enable to skip QTEs. Disable to restore normal QTE behavior."
+    },
+    "SkipCombatQTE": {
+      "label": "Skip Combat QTEs",
+      "description": "Independently control whether combat QTEs are skipped."
+    }
+  }
+}
