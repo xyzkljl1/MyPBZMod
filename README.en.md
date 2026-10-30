@@ -4,14 +4,15 @@
 
 [Nexus Mods](https://www.nexusmods.com/phantombladezero/mods/86)
 
-ModConfigUI (MCU) lets players edit Mod configurations in Phantom Blade Zero's native settings menu. You can choose between the following **two** integration methods.
+ModConfigUI (MCU) lets players edit Mod configurations in Phantom Blade Zero's native settings menu. You can choose between the following **three** integration methods.
 
-- [Full integration: schema configuration (recommended)](#1-full-integration-schema-configuration-recommended)
-- [Lightweight integration: simple json](#2-lightweight-integration-simple-json)
+- [Lua integration: schema configuration](#1-lua-integration-schema-configuration)
+- [Blueprint integration: schema configuration](#2-blueprint-integration-schema-configuration)
+- [Lightweight integration: simple json](#3-lightweight-integration-simple-json)
 
 In this guide, `Mods/` refers to `PBZ/platform/steam/ue4ss/Mods/`.
 
-## 1. Full integration: schema configuration (recommended)
+## 1. Lua integration: schema configuration
 
 ### What you need to do
 
@@ -185,11 +186,17 @@ This function lets you save changes made proactively by your Mod instead of thro
 | `IntSlider` | Integer slider | Required `min/max/step` |
 | `FloatSlider` | Floating-point slider | Required `min/max/step` |
 | `TextBox` | Text input box | Optional `minLength/maxLength/pattern` |
+| `ColorBox` | Color input box with preview | A string in `#RRGGBB` format |
+| `LuaKey` | Key binding | UE4SS numeric key code; `0` means unbound |
 | `IntSelect` | Integer selection | Required `options` |
 | `FloatSelect` | Floating-point selection | Required `options` |
 | `TextSelect` | Text selection | Required `options` |
 | `Button` | Action button; does not save a configuration value | Required `onclick` |
 | `Separator` | Divider; does not save a configuration value | None |
+
+`ColorBox` provides a color preview. Input accepts lowercase and uppercase letters, but values are saved in uppercase.
+
+`LuaKey` captures keyboard or mouse buttons, but does not support key combinations, gamepads, or the mouse wheel. Its configuration value is a UE4SS numeric key code that can be passed directly as the first argument to UE4SS `RegisterKeyBind`, without conversion. It has the same meaning as Lua constants such as `Key.F8`. MCU only updates the configuration value; **it does not rebind the hotkey for you**. (For a Blueprint-compatible `FKey` value, see `BPKey` in the Blueprint schema section.)
 
 `options` is a nonempty array. Each entry requires `value` and optionally provides `label`, for example `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`. The saved value is `value`, not the index or display text.
 
@@ -197,7 +204,7 @@ This function lets you save changes made proactively by your Mod instead of thro
 
 Text length is counted in UTF-8 characters. `pattern` is a **Lua pattern**, not a regular expression; add `^` and `$` when the entire string must match.
 
-Automatic `default` inference: booleans use `false`, text uses an empty string, selections use the first option, sliders use the lower bound, and numeric inputs are inferred from `0` subject to the range. If the inferred value does not satisfy the constraints, initialization fails. For example, text with `minLength = 1` needs a nonempty default value.
+Automatic `default` inference: ColorBox uses `#FFFFFF`, LuaKey uses `0`, booleans use `false`, text uses an empty string, selections use the first option, sliders use the lower bound, and numeric inputs are inferred from `0` subject to the range. If the inferred value does not satisfy the constraints, initialization fails. For example, text with `minLength = 1` needs a nonempty default value.
 
 ### Complete code example
 
@@ -236,6 +243,8 @@ local schema = {
             key = "TextValue", type = "TextBox", label = "Text input", default = "Hello MCU",
             maxLength = 40, onchange = onchange,
         },
+        {key = "Color", type = "ColorBox", label = "Color", default = "#FF8800", onchange = onchange},
+        {key = "Hotkey", type = "LuaKey", label = "Hotkey", default = Key.F8, onchange = onchange},
         {
             key = "IntegerChoice", type = "IntSelect", label = "Integer selection", default = 2,
             options = {{value = 1, label = "Low"}, {value = 2, label = "High"}},
@@ -268,7 +277,7 @@ printConfig(config)
 
 - For this integration method, the reset-to-defaults button restores the defaults from the schema and applies them immediately.
 - When the schema changes, an old value is retained if it satisfies the range for the same configuration item in the new schema. Otherwise, it is discarded and the default value is used.
-- If only the MCU UI is disabled while the shared module remains installed, the Mod can still initialize its configuration. Do not reference private MCU UI scripts; use only the shared module's public interfaces.
+- Lua Mods can still initialize their configuration if only the MCU UI is disabled while the shared module remains installed; Blueprint integration requires MCU to be enabled. Do not reference private MCU UI scripts; use only the shared module's public interfaces.
 - Do not distribute duplicate copies of the shared module with your Mod, or distribute the runtime-generated `.schemaconfig.json`.
 - MCU's own text follows the game language. Mod configuration text defaults to the schema and can be translated using the optional packs below.
 - If the same Mod registers a schema and provides the simple JSON described below, only the schema takes effect. Folder names are matched case-insensitively.
@@ -300,7 +309,99 @@ Place a UTF-8 JSON file at `Mods/<ModName>/<ModName>.lang.<language-code>.json`,
 - Packs only change UI text, not configuration, UI generation, or storage logic. Simple integration does not currently support packs.
 - See the [MCUExample2 English pack](MCUExample2/platform/steam/ue4ss/Mods/MCUExample2/MCUExample2.lang.en.json); its default Chinese text remains in the schema.
 
-## 2. Lightweight integration: simple json
+## 2. Blueprint integration: schema configuration
+
+Blueprint Mods also use schema configuration. They require MCU to be enabled and a working Blueprint Mod loader, but do not need Lua code or their own JSON file handling. Complete editable example: [MCUExample5](BPMod/MCUExample5/) (UE 5.7.4).
+
+### What you need to do
+
+1. Copy this repository's `BPMod/ModConfigUI/Content/Mods/ModConfigUI/Blueprint/` folder to `Content/Mods/ModConfigUI/Blueprint/` in your UE project. It contains the definitions of `BP_MCUConfigComponent`, `ST_MCUFieldV1`, and `ST_MCUOptionV1`. **These are build dependencies and must not be included in your package.**
+2. Add a `BP_MCUConfigComponent` component to your Mod Actor under `/Game/Mods/<ModName>/`. `Fields` uses `ST_MCUFieldV1`, and options use `ST_MCUOptionV1`.
+3. Define your own configuration struct containing all the settings you need. Create a `Config` variable of that type in your Mod Actor and assign its default values as the default configuration.
+4. Edit the component's `Fields` array to specify control parameters. These determine which controls are created for your settings. Each `Key` must correspond to a member of `Config`.
+5. Read configuration values directly from the member pins of `Config` in your Blueprint logic.
+
+### What MCU does
+
+During initialization, MCU automatically loads the configuration file into `Config`. If the file does not exist, it creates one using the defaults in `Config`.
+When the user changes settings, MCU updates the `Config` variable and sends the corresponding notifications.
+
+### Code example
+
+[Blueprint example](BPMod/MCUExample5)
+
+### Defining the Blueprint schema in the editor
+
+Open your Mod Actor and show the component panel through **Window → Components**. Select the added `BP_MCUConfigComponent` (named `MCUConfig` in Example5), then search for **Fields** in the Details panel on the right. Do not select the component reference under "My Blueprint → Variables", or edit the default Fields on the shared SDK component itself.
+
+For example, define an Integer member named `IntOptionExample` in your configuration struct, set it to `12` under the Actor's **Class Defaults → Config**, and add the following entry to the component's `Fields`:
+
+```text
+Key: IntOptionExample
+Type: IntBox
+Label: Integer option
+Description: An example integer setting.
+UseMin: true
+Min: 0
+UseMax: true
+Max: 100
+```
+
+`Fields` is the ordered Blueprint schema definition stored on the component. MCU reads it automatically and uses the Actor's `Config` class defaults as the default configuration.
+
+### Supported types and parameters
+
+| Type | Control | Config member type | Parameters |
+| --- | --- | --- | --- |
+| `BoolToggle` | Boolean two-option selector | Boolean | None |
+| `IntBox` / `FloatBox` | Integer / floating-point input box | Integer (32-bit) / Double | Optional bounds; Step is not used |
+| `IntSlider` / `FloatSlider` | Integer / floating-point slider | Integer (32-bit) / Double | Enable both bounds and set a positive Step |
+| `TextBox` | Text input box | String | Optional length and Pattern |
+| `ColorBox` | Color input box with preview | String | Fixed `#RRGGBB` format, saved in uppercase |
+| `BPKey` | Single-key binding | Key (FKey) | `None` means unbound; no additional parameters |
+| `IntSelect` / `FloatSelect` / `TextSelect` | Option selector | Integer (32-bit) / Double / String | Nonempty Options; saves the option value |
+| `Button` | Action button | No member needed | Handle in OnButtonClicked |
+| `Separator` | Section heading | No member needed | None |
+
+| Fields parameter | Purpose |
+| --- | --- |
+| `Key`, `Type`, `Label`, `Description` | Unique member name, control type from the table above, display name, and description on the right; an empty Label falls back to Key |
+| `UseMin` / `Min`, `UseMax` / `Max` | Enable numeric bounds; both must be enabled for either Slider type |
+| `Step` | Slider step size; not used by Box controls |
+| `MinLength`, `MaxLength`, `Pattern` | TextBox length and Lua pattern; `-1` means no length limit, and an empty pattern means no pattern constraint |
+| `Options` | Ordered Select options; each entry contains `Label` and the corresponding `IntValue`, `FloatValue`, or `TextValue` |
+
+Apart from Key, nested structs, arrays, and similar configuration values are not supported. Defaults come from `Config` and must satisfy the corresponding constraints. Integers must fit in 32 bits and floating-point values must be finite; slider steps start at Min. TextBox length is counted in UTF-8 characters. Pattern is a Lua pattern, not a regular expression; use `^` and `$` to match the entire string.
+
+Clicking `BPKey` captures a keyboard or mouse button; key combinations, gamepads, and the mouse wheel are not supported. Blueprints can read the FKey directly from Config and pass it to inputs such as `Is Input Key Down` or `Was Input Key Just Pressed`, without conversion. **MCU only updates the setting in `Config`; it does not rebind the hotkey for you.**
+
+### Interfaces and callbacks
+
+The component initializes and unregisters automatically; no manual calls are needed. Initialization failures are written to the UE4SS log.
+
+Add the following ordinary Blueprint functions to the Actor:
+
+| Function | When it is called |
+| --- | --- |
+| `OnConfigReady()` | Called once after successful initialization and loading the complete `Config` |
+| `OnConfigChanged(Key: String)` | After the complete `Config` is updated, called once per setting that actually changed, in field declaration order; Key is the field name, and the new value can be read directly from the corresponding typed member of `Config` |
+| `OnButtonClicked(Key: String)` | Called when a Button is clicked; Key is the button field name; does not save configuration |
+
+Matching names are called automatically, without manual binding. `Config` updates automatically; you **do not need** to update the configuration yourself in these functions.
+
+Initialization logic that depends on configuration values should run from `OnConfigReady`, not BeginPlay.
+
+Initialization, invalid values, failed saves, and unchanged values do not trigger `OnConfigChanged`. Resetting all defaults also notifies only the fields that actually changed, one by one, on the game thread.
+
+### Configuration saving, defaults, and language packs
+
+The configuration file is `Mods/<ModName>/<ModName>.schemaconfig.json`. It contains configuration key-value pairs, not Fields; ModName is obtained automatically from the path. If a Mod with the same name has registered a schema, MCU ignores its Simple JSON configuration file.
+
+Optional language packs go in `Mods/<ModName>/<ModName>.lang.<language-code>.json`. They follow the game language and override Fields labels, descriptions, and option labels; missing translations fall back to the original text in Fields. See [UI language packs](#ui-language-packs) for the format and language codes, and the [Example5 Chinese pack](MCUExample5/platform/steam/ue4ss/Mods/MCUExample5/MCUExample5.lang.zh-Hans.json) for an example.
+
+Changes your own logic makes to `Config` are not saved or propagated back to MCU and will be overwritten on the next synchronization. Do not bundle runtime-generated configuration files.
+
+## 3. Lightweight integration: simple json
 
 ### What you need to do
 

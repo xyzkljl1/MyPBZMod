@@ -4,14 +4,15 @@
 
 [Nexus Mods](https://www.nexusmods.com/phantombladezero/mods/86)
 
-ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改 Mod 配置。你可以选择以下**两种**接入方式。
+ModConfigUI（MCU）让玩家在《影之刃零》的原生设置菜单中修改 Mod 配置。你可以选择以下**三种**接入方式。
 
-- [完全接入：schema 配置（推荐）](#一完全接入-schema-配置推荐)
-- [轻量接入：simple json](#二轻量接入simple-json)
+- [Lua接入：schema 配置](#一lua接入schema-配置)
+- [Blueprint接入：schema 配置](#二blueprint接入schema-配置)
+- [轻量接入：simple json](#三轻量接入simple-json)
 
 下文的 `Mods/` 指 `PBZ/platform/steam/ue4ss/Mods/`。
 
-## 一，完全接入： schema 配置（推荐）
+## 一，Lua接入：schema 配置
 
 ### 你需要做什么
 
@@ -185,24 +186,26 @@ local saved, err = mcu.ForceSaveConfig(config)
 | `IntSlider` | 整数滑动条 | 必填 `min/max/step` |
 | `FloatSlider` | 浮点数滑动条 | 必填 `min/max/step` |
 | `TextBox` | 文本输入框 | 可选 `minLength/maxLength/pattern` |
-| `ColorBox` | 颜色文本输入与预览 | 固定 `#RRGGBB`，保存为大写字符串 |
-| `LuaKey` | 单键绑定（Lua） | UE4SS 数字键码，默认值可用 `Key.F8`；`0` 为未绑定 |
-| `BPKey` | 单键绑定（蓝图） | 配置成员使用 Key 类型；文件保存 UE 按键名称；`None` 为未绑定 |
+| `ColorBox` | 颜色输入框(可预览) | `#RRGGBB`格式的字符串 |
+| `LuaKey` | 按键绑定 | UE4SS 数字键码；`0` 为未绑定 |
 | `IntSelect` | 整数选项 | 必填 `options` |
 | `FloatSelect` | 浮点数选项 | 必填 `options` |
 | `TextSelect` | 文本选项 | 必填 `options` |
 | `Button` | 操作按钮，不保存配置值 | 必填`onclick` |
 | `Separator` | 分割线，不保存配置值 | 无 |
 
-颜色编辑时仅合法的 `#RRGGBB` 更新预览；回车或失去焦点后保存，非法输入恢复已保存值。按键控件点击后捕获一个键盘或鼠标按键，松键确认，Esc 取消，不支持组合键、手柄或滚轮。LuaKey 的配置值与 onchange 参数都是数字键码；BPKey 的 Config 成员为 Key。MCU 负责保存配置，不自动注册或替换 Mod 的输入绑定；未绑定值不可直接传给 RegisterKeyBind。
 
-其中`options` 是非空数组，每项的 `value` 必填、`label` 可选，例如 `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`。保存的是 `value`，不是下标或显示文字。
+`ColorBox` 控件提供颜色预览，输入支持大小写字母但均保存为大写
+
+`LuaKey`控件可录入键盘或鼠标按键，不支持组合键、手柄或滚轮。配置值为UE4SS数字键码，可直接作为 UE4SS `RegisterKeyBind` 的第一个参数无需转换，和lua中定义的 `Key.F8`等具有相同的含义。注意MCU只会更新配置项，**不会为你重新绑定Hotkey**。(如果你想获得蓝图可用的`FKey`类型配置，参考蓝图Schema部分的`BPKey`控件)
+
+`options` 是非空数组，每项的 `value` 必填、`label` 可选，例如 `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`。保存的是 `value`，不是下标或显示文字。
 
 `step` 仅用于滑动条，必须为正，步长起点为 `min`。整数必须在 Lua 整数可表示的范围内，浮点数必须为有限数值。
 
 文本长度按 UTF-8 字符计算。`pattern` 是 **Lua pattern**，不是正则表达式；需要整串匹配时添加 `^` 和 `$`。
 
-`default`自动推导：ColorBox 为 `#FFFFFF`，LuaKey 为 `0`，BPKey 为 `None`；布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
+`default`自动推导：ColorBox 为 `#FFFFFF`，LuaKey 为 `0`；布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
 
 ### 完整代码示例
 
@@ -241,6 +244,8 @@ local schema = {
             key = "TextValue", type = "TextBox", label = "文本输入", default = "Hello MCU",
             maxLength = 40, onchange = onchange,
         },
+        {key = "Color", type = "ColorBox", label = "颜色", default = "#FF8800", onchange = onchange},
+        {key = "Hotkey", type = "LuaKey", label = "快捷键", default = Key.F8, onchange = onchange},
         {
             key = "IntegerChoice", type = "IntSelect", label = "整数选项", default = 2,
             options = {{value = 1, label = "少"}, {value = 2, label = "多"}},
@@ -305,29 +310,78 @@ printConfig(config)
 - 语言包只改变UI文字，不改变配置、UI生成和存储逻辑。Simple 接入暂不支持语言包。
 - 可参考 [MCUExample2 英文语言包](MCUExample2/platform/steam/ue4ss/Mods/MCUExample2/MCUExample2.lang.en.json)；其中文默认文字仍在 schema 中。
 
-### 蓝图 Mod 接入
+## 二，Blueprint接入：schema 配置
 
-蓝图 Mod 同样使用 schema 配置，依赖启用的 MCU 及可用的蓝图 Mod 加载器，无需编写 Lua 或自行读写 JSON。完整可编辑示例：[MCUExample5](BPMod/MCUExample5/README.md)（UE 5.7.4）。
+蓝图 Mod 同样使用 schema 配置，依赖启用的 MCU 及可用的蓝图 Mod 加载器，无需编写 Lua 或自行读写 JSON。完整可编辑示例：[MCUExample5](BPMod/MCUExample5/)（UE 5.7.4）。
 
-1. 将 [MCU 蓝图 SDK](BPMod/ModConfigUI/README.md) 的 `Blueprint` 目录资产迁移到自己的工程，保留 `/Game/Mods/ModConfigUI/Blueprint/` 路径。SDK 由 MCU 安装包提供，不要重复打进自己的包。
-2. 在 `/Game/Mods/<ModName>/` 下的 Mod Actor 中添加 `BP_MCUConfigComponent` 组件。 `Fields` 使用 `ST_MCUFieldV1`，其中的选项使用 `ST_MCUOptionV1`；这两个共享结构体为冻结的 V1 接口，使用 MCU 提供的原始资产，不自行重建或修改。
-3. 定义自己的配置结构体，并创建该类型的 `Config` 变量。仅在 Actor 的类默认值 `Config` 中设置默认配置，不在字段描述中重复定义。
-4. 编辑组件的 `Fields` 数组，按显示顺序填写字段。`Key` 必须与结构体的成员名完全一致；按钮和分隔标题不需要结构体成员。
-5. 业务蓝图直接读取 `Config`，用结构体成员引脚取得明确类型的值，无需字符串 Getter。
+### 你需要做什么
 
-组件在 BeginPlay 自动执行 `InitFromFile`，从所属 Actor 的资产目录确定 Mod 名称。每个 Mod 同时只支持一个有效配置实例；组件结束或切换地图时注销，新的实例会重新读取保存值。
+1. 将本仓库的 `BPMod/ModConfigUI/Content/Mods/ModConfigUI/Blueprint/` 文件夹拷贝为你的UE工程中 `Content/Mods/ModConfigUI/Blueprint/` 文件夹，其中包含`BP_MCUConfigComponent` `ST_MCUFieldV1` `ST_MCUOptionV1`的定义。注意**它们只用于构建而不应参与打包**
+2. 在 `/Game/Mods/<ModName>/` 中你的 Mod Actor 中添加 `BP_MCUConfigComponent` 组件。`Fields` 使用 `ST_MCUFieldV1`，选项使用 `ST_MCUOptionV1`
+3. 定义自己的配置结构体，其中包含你想要的所有配置项，在Mod_Actor中创建具有该类型的 `Config` 变量，并赋予其默认值作为默认配置。
+4. 编辑组件的 `Fields` 数组，填写控件参数，这会决定你的配置项会创建什么样的控件。其中 `Key` 必须与 `Config`的成员对应。
+5. 业务蓝图直接从 `Config` 的引脚中取得配置项。
+
+### MCU会做什么
+
+在初始化时自动加载配置文件中的配置到 `Config`,如果不存在配置文件则根据 `Config` 的默认值创建。
+用户修改配置时更新 `Config` 变量并发送相关事件
+
+### 代码示例
+
+[蓝图 Example](BPMod/MCUExample5)
+
+### 在编辑器中定义蓝图 schema
+
+打开自己的 Mod Actor，通过 **窗口 → 组件** 显示组件面板，选中添加的 `BP_MCUConfigComponent`（Example5 将其命名为 `MCUConfig`），在右侧细节中搜索 **Fields**。不要选“我的蓝图 → 变量”中的组件引用，也不要修改通用 SDK 组件的默认 Fields。
+
+例如，在自己的配置结构体中定义 Integer 成员 `IntOptionExample`，在 Actor 的 **类默认值 → Config** 中将它设为 `12`，然后在组件的 `Fields` 中增加：
+
+```text
+Key: IntOptionExample
+Type: IntBox
+Label: Integer option
+Description: An example integer setting.
+UseMin: true
+Min: 0
+UseMax: true
+Max: 100
+```
+
+`Fields` 就是蓝图的 schema 定义，有序，保存在组件上，MCU 会自动读取它，并使用 Actor 的 `Config` 类默认值作为默认配置。
+
+
+### 支持的类型和参数
+
+| Type | 控件 | Config 成员类型 | 参数 |
+| --- | --- | --- | --- |
+| `BoolToggle` | 布尔二选一 | Boolean | 无 |
+| `IntBox` / `FloatBox` | 整数／浮点数输入框 | Integer（32 位）／Double | 可选上下限；不使用 Step |
+| `IntSlider` / `FloatSlider` | 整数／浮点数滑动条 | Integer（32 位）／Double | 必须启用上下限，并设置正数 Step |
+| `TextBox` | 文本输入框 | String | 可选长度和 Pattern |
+| `ColorBox` | 颜色输入框(可预览) | String | 固定 `#RRGGBB`，保存为大写 |
+| `BPKey` | 单键绑定 | Key（FKey） | `None` 表示未绑定；无额外参数 |
+| `IntSelect` / `FloatSelect` / `TextSelect` | 多选一 | Integer（32 位）／Double／String | 非空 Options，保存选项值 |
+| `Button` | 操作按钮 | 不需要成员 | 在 OnButtonClicked 中处理 |
+| `Separator` | 分隔标题 | 不需要成员 | 无 |
 
 | Fields 参数 | 用途 |
 | --- | --- |
-| `Key`、`Type`、`Label`、`Description` | 成员名、上表中的控件类型、显示名称、右侧说明 |
+| `Key`、`Type`、`Label`、`Description` | 唯一成员名、上表中的控件类型、显示名称、右侧说明；Label 为空时显示 Key |
 | `UseMin` / `Min`、`UseMax` / `Max` | 启用数值上下限；两个 Slider 均必须启用 |
 | `Step` | Slider 的步长；Box 不使用此参数 |
 | `MinLength`、`MaxLength`、`Pattern` | TextBox 长度及 Lua pattern；长度为 `-1` 表示不限制，空 pattern 表示不限制 |
 | `Options` | Select 的有序选项；每项包含 `Label`，以及对应的 `IntValue`、`FloatValue` 或 `TextValue` |
 
-BoolToggle 对应 Boolean，Int 控件对应 Integer（32 位），Float 控件对应 **Double**，Text 和 ColorBox 控件对应 String，BPKey 对应 **Key（FKey）**。LuaKey 用于 Lua 接入；蓝图使用 BPKey。除 Key 外，暂不支持嵌套结构体、数组等配置值。文本长度、范围和步长等规则与 Lua schema 相同；整数不得超出 32 位范围。
+除 Key 外，不支持嵌套结构体、数组等配置值。默认值来自 `Config`，必须符合对应限制。整数不得超出 32 位范围，浮点数必须为有限值；滑动条 Step 的起点为 Min。TextBox 长度按 UTF-8 字符计算，Pattern 为 Lua pattern，不是正则表达式；需要匹配整串时使用 `^` 和 `$`。
 
-可在 Actor 中添加以下普通蓝图函数：
+`BPKey` 点击后捕获键盘或鼠标按键,不支持组合键、手柄或滚轮。蓝图可直接读取 Config 中的 FKey 并用于 `Is Input Key Down` `Was Input Key Just Pressed`等的输入而无需转换。**注意MCU只会更新 `Config` 中的配置而不会自动为你重新绑定Hotkey**
+
+### 接口和回调
+
+组件自动完成初始化和注销，无需手动调用；初始化失败原因写入 UE4SS 日志。
+
+在 Actor 中添加以下普通蓝图函数：
 
 | 函数 | 调用时机 |
 | --- | --- |
@@ -335,13 +389,21 @@ BoolToggle 对应 Boolean，Int 控件对应 Integer（32 位），Float 控件�
 | `OnConfigChanged(Key: String)` | 完整 `Config` 更新后，按字段声明顺序对每个实际变化的配置项调用一次；Key 为字段名，直接读取 `Config` 中对应的强类型成员 |
 | `OnButtonClicked(Key: String)` | 点击 Button 时调用，Key 是按钮字段名；不保存配置 |
 
-初始化、非法值、保存失败或值未变化不会触发 `OnConfigChanged`。恢复全部默认值同样只对实际变化的配置项逐项通知，通知在游戏线程执行。无需定义旧配置变量。
+只要命名一致会被自动触发，不需要手动绑定。`Config` 会自动更新，**不需要**在这些函数中自己更新配置。
 
-组件的 `IsReady` 可用于判断初始化是否完成；失败原因在 `Error` 和 UE4SS 日志中。示例通过 `BPML_GenericFunctions` 提供的 `PrintToModLoader` 输出日志，使用该打印功能时需启用此 Mod。
+需要配置项的初始化业务应由 `OnConfigReady` 触发而非 BeginPlay。
 
-配置文件和语言包沿用本节的 `.schemaconfig.json`、`.lang.<语言代码>.json` 约定。蓝图端不提供 ForceSave；业务代码自行改变 `Config` 不会保存或反向更新 MCU，下次同步时会被覆盖。不要随包发布运行时生成的配置文件。
+初始化、非法值、保存失败或值未变化不会触发 `OnConfigChanged`。恢复全部默认值同样只对实际变化的配置项逐项通知，通知在游戏线程执行。
 
-## 二，轻量接入：simple json
+### 配置保存、默认值和语言包
+
+配置文件位于 `Mods/<ModName>/<ModName>.schemaconfig.json`，内容为配置键值，不包含 Fields，ModName根据路径自动获取。同名 Mod 已注册 schema 时，MCU 会忽略它的 Simple json配置文件。
+
+可选语言包放在 `Mods/<ModName>/<ModName>.lang.<语言代码>.json`，跟随游戏语言覆盖 Fields 的 Label、Description 及选项标签；缺少翻译时使用 Fields 中原来的文字。文件格式和语言代码见 [UI语言包](#ui语言包)，可参考 [Example5 中文语言包](MCUExample5/platform/steam/ue4ss/Mods/MCUExample5/MCUExample5.lang.zh-Hans.json)。
+
+业务代码自行改变 `Config` 不会保存或反向更新 MCU，下次同步时会被覆盖。不要随包发布运行时生成的配置文件。
+
+## 三，轻量接入：simple json
 
 ### 你需要做什么
 

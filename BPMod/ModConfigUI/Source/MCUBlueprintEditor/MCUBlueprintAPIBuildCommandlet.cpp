@@ -12,6 +12,8 @@ bool SetFlag(UBlueprint* BP, FName FunctionName, FName Flag, FName Notification)
     }
     auto* Entry = Function(BP, FunctionName);
     if (!Entry) return false;
+    Entry->ClearExtraFlags(FUNC_Public | FUNC_Protected);
+    Entry->AddExtraFlags(FUNC_Private);
     auto* SetNode = Set(Entry->GetGraph(), Flag);
     auto* Value = SetNode->FindPin(Flag);
     if (!Value) return false;
@@ -34,10 +36,29 @@ bool Lifecycle(UBlueprint* BP) {
             Event->CustomFunctionName = Name; Event->AllocateDefaultPins();
         }
     }
+    // Status remains reflected for the Lua adapter, but is not a Blueprint API.
+    for (FName Name : {FName("IsReady"), FName("Error")}) {
+        const int32 Index = FBlueprintEditorUtils::FindNewVariableIndex(BP, Name);
+        if (Index == INDEX_NONE) return false;
+        BP->NewVariables[Index].PropertyFlags &= ~(CPF_Edit | CPF_BlueprintVisible | CPF_ExposeOnSpawn);
+        FBlueprintEditorUtils::SetBlueprintVariableMetaData(BP, Name, nullptr,
+            FBlueprintMetadata::MD_Private, TEXT("true"));
+    }
     // Compile event signatures before creating calls to them.
-    return Compile(BP)
+    if (!(Compile(BP)
         && SetFlag(BP, "InitFromFile", "Requested", "MCU_Config_Init")
-        && SetFlag(BP, "Release", "Ending", "MCU_Config_Release") && Compile(BP);
+        && SetFlag(BP, "Release", "Ending", "MCU_Config_Release") && Compile(BP))) return false;
+    for (FName Name : {FName("InitFromFile"), FName("Release")}) {
+        const auto* Fn = BP->GeneratedClass->FindFunctionByName(Name);
+        if (!Fn || !Fn->HasAnyFunctionFlags(FUNC_Private)
+            || Fn->HasAnyFunctionFlags(FUNC_Public | FUNC_Protected)) return false;
+    }
+    for (FName Name : {FName("IsReady"), FName("Error")}) {
+        const auto* Property = FindFProperty<FProperty>(BP->GeneratedClass, Name);
+        if (!Property || Property->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible | CPF_ExposeOnSpawn)) return false;
+    }
+    UE_LOG(LogTemp, Display, TEXT("MCU_INTERNAL_API_VERIFIED: private lifecycle functions; status reflected but not Blueprint-visible"));
+    return true;
 }
 bool EventCalls(UBlueprint* BP, FName EventName, FName FunctionName) {
     UEdGraph* Graph = BP->UbergraphPages[0];
