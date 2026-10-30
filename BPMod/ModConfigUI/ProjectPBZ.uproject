@@ -1,0 +1,12 @@
+{
+    "FileVersion": 3,
+    "EngineAssociation": "5.7",
+    "DisableEnginePluginsByDefault": true,
+    "Modules": [
+        {
+            "Name": "MCUBlueprintEditor",
+            "Type": "Editor",
+            "LoadingPhase": "Default"
+        }
+    ]
+}

@@ -482,13 +482,51 @@ local function bind(entries, object, callback)
     return function() if entries[key] == entry then entries[key] = nil end end
 end
 function M.onClick(button, callback) return bind(clicks, button, callback) end
--- A collapsed child holds a typed delegate receiver alive without affecting layout.
--- Its ordinary UFUNCTION setter can be hooked; UMG delegate signatures cannot.
-function M.inputRelay(row, control, className)
+local function inputWrapper(row, control)
     local wrapper = native(row.WidgetTree, 'Overlay', 'InputWrapper')
     local slot = wrapper:AddChildToOverlay(control)
     slot:SetHorizontalAlignment(0)
     slot:SetVerticalAlignment(2)
+    return wrapper
+end
+
+-- The hidden blueprint child owns text delegate binding and stays alive with the row.
+-- Only its dedicated function is hooked; inputHooks handles menu activation/cleanup.
+function M.textInputRelay(owner, row, control, callback)
+    local package = '/Game/Mods/ModConfigUI/W_TextInputBridge'
+    local classPath = package .. '.W_TextInputBridge_C'
+    local class = StaticFindObject(classPath)
+    if not valid(class) then
+        local registry = StaticFindObject('/Script/AssetRegistry.Default__AssetRegistryHelpers')
+        class = registry:GetAsset({PackageName = FName(package), AssetName = FName('W_TextInputBridge_C')})
+    end
+    assert(valid(class), 'MCU text bridge is unavailable; install ModConfigUI.pak/.utoc/.ucas and restart the game')
+    local library = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+    local receiver = library:Create(owner, class, owner:GetOwningPlayer())
+    assert(valid(receiver), 'Could not create MCU text bridge')
+    receiver.TickFrequency = 0
+    receiver:SetVisibility(1)
+    local wrapper = inputWrapper(row, control)
+    wrapper:AddChildToOverlay(receiver)
+    local path = classPath .. ':MCUTextCommitted'
+    local entries = signals[path]
+    if not entries then entries = {}; signals[path] = entries end
+    assert(M.inputHook(path, function(object) dispatch(entries, object) end), 'MCU text commit function unavailable')
+    local unbind = bind(entries, receiver, callback)
+    local ok, err = pcall(function() receiver:BindInput(control) end)
+    if not ok then unbind(); receiver:RemoveFromParent(); error(err, 0) end
+    return wrapper, function()
+        unbind()
+        if valid(receiver) then
+            if valid(control) then receiver:UnbindInput() end
+            receiver:RemoveFromParent()
+        end
+    end
+end
+
+-- Slider delegates still use a collapsed native receiver until their migration.
+function M.inputRelay(row, control, className)
+    local wrapper = inputWrapper(row, control)
     -- UE 5.7 uses UTF-8 soft subpaths; this UE4SS build copies them as UTF-16
     -- when Add/Remove constructs a weak delegate reference. A package-level
     -- receiver has an empty subpath, avoiding that incompatible string copy.

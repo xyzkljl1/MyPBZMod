@@ -13,6 +13,14 @@ local rowTitle, addRow, log = ui.rowTitle, ui.addRow, ui.log
 local function selectEntry(entry, selected)
     if not valid(entry.row) then return end
     entry.row:SetSelected(selected)
+    -- Detached row titles do not all receive the native selected-text color.
+    local color = selected and {ColorUseRule = 0, SpecifiedColor = {R = 0, G = 0, B = 0, A = 1}}
+        or ui.prop(entry.row, 'DefaultColor')
+        or {ColorUseRule = 0, SpecifiedColor = {R = 1, G = 1, B = 1, A = 1}}
+    for _, name in ipairs({'Text_SettingName', 'SettingName', 'LocText_SettingName'}) do
+        local label = ui.prop(entry.row, name)
+        if valid(label) then label:SetColorAndOpacity(color) end
+    end
     if entry.editor and entry.editor.setHighlighted then entry.editor.setHighlighted(selected) end
 end
 

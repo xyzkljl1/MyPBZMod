@@ -87,18 +87,13 @@ local function createText(owner, state, mod, row, value, changed, unbinds)
     control.RevertTextOnEscape = true
     control.SelectAllTextWhenFocused = true
     control:SetText(FText(value))
-    local wrapper, receiver = ui.inputRelay(row, control, 'RichTextBlock')
+    local wrapper, unbind = ui.textInputRelay(owner, row, control, function() changed(true) end)
+    unbinds[#unbinds + 1] = unbind
     local editor = textInput(owner, row, control, wrapper, value, function()
         local raw = ui.fname(control:GetText())
         return raw, raw
     end)
     editor.setValue = function(current) control:SetText(FText(current)) end
-    -- Commit fires for Enter and focus transfer on the input itself. A row's
-    -- focus-path event is not a reliable notification for its Slate text child.
-    -- PBZ's delegate starts with FText at offset 0, matching SetText's only
-    -- input; ProcessDelegate forwards that buffer and SetText ignores the trailing commit enum.
-    unbinds[#unbinds + 1] = ui.onSignal(control, 'OnTextCommitted', receiver,
-        '/Script/UMG.RichTextBlock:SetText', function() changed(true) end)
     editor.setHighlighted = function(selected)
         control.WidgetStyle.ColorAndOpacity = selected and row.SelectedColor or row.DefaultColor
         -- Refresh the color with this editor's own font, not the template's selected style.

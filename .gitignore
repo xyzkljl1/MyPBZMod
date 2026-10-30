@@ -18,3 +18,11 @@ _temp/
 /UE4SS_v*.zip
 /zDEV-UE4SS_v*.zip
 /userUE4SS/
+
+# Generated files when opening Blueprint authoring projects locally.
+/BPMod/*/Binaries/
+/BPMod/*/Intermediate/
+/BPMod/*/Saved/
+/BPMod/*/DerivedDataCache/
+/BPMod/*/.vs/
+/BPMod/*/__pycache__/
