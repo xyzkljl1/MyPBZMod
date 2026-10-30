@@ -13,5 +13,7 @@
   "no_fields": "此配置没有可编辑项",
   "no_configs": "尚未发现可编辑的配置",
   "discovery_failed": "无法发现 Mod 配置，请查看 UE4SS 日志",
-  "config_read_failed": "{mod}：配置无法读取，请查看 UE4SS 日志"
+  "config_read_failed": "{mod}：配置无法读取，请查看 UE4SS 日志",
+  "unbound": "未绑定",
+  "press_key": "请按键（Esc 取消）"
 }

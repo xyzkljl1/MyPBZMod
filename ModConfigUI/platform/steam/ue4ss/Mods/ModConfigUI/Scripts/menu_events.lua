@@ -75,6 +75,9 @@ function M.start(menu, page)
         menu.updateSelection(state, visible(state))
     end
 
+    local originalRefresh = refresh
+    refresh = function(state) return ui.timed('menu.refresh', originalRefresh, state) end
+
     watchPanel = function(owner, host)
         if not ui.isA(owner, PANEL) or not valid(owner:GetOwningPlayer())
             or not valid(prop(owner, 'WidgetTree')) then return end
@@ -123,6 +126,10 @@ function M.start(menu, page)
         ui.attempt('Could not attach menu callback ' .. path, ui.hook, path, callback)
     end
     installHooks = function()
+        hook(PANEL .. ':RefreshKey', function(owner)
+            local state = states[address(owner)]
+            if state and state.active then request(state) end
+        end)
         hook(PANEL .. ':BP_OnWidgetDeactivated_Event', function(owner)
             local state = states[address(owner)]
             if state then close(state, false) end

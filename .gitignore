@@ -30,3 +30,6 @@ _temp/
 # Local AutoSwitchWeapon editor configuration, not required by the mod.
 /BPMod/AutoSwitchWeapon/Config/DefaultEngine.ini
 /BPMod/AutoSwitchWeapon/Config/DefaultInput.ini
+
+# Example editor reference assets are copied from the tracked MCU SDK by build.py.
+/BPMod/MCUExample5/Content/Mods/ModConfigUI/

@@ -1,9 +1,11 @@
 -- MCU schema compilation and value validation. No file or engine access.
 local M = {}
+local keys = require('mcu_core.key_codes')
 local kinds = {
     BoolToggle = 'boolean', IntBox = 'integer', FloatBox = 'number',
     IntSlider = 'integer', FloatSlider = 'number', TextBox = 'string',
     IntSelect = 'integer', FloatSelect = 'number', TextSelect = 'string', Button = 'button', Separator = 'separator',
+    ColorBox = 'string', LuaKey = 'integer', BPKey = 'string',
 }
 
 local function finite(value)
@@ -55,6 +57,13 @@ function M.validate(field, value)
     elseif type(value) ~= kind then
         return nil, 'Expected ' .. kind
     end
+    if field.type == 'ColorBox' then
+        return value:match('^#%x%x%x%x%x%x$') ~= nil or nil, 'Expected #RRGGBB'
+    elseif field.type == 'LuaKey' then
+        return keys.names[value] ~= nil or nil, 'Unsupported keyboard/mouse key code'
+    elseif field.type == 'BPKey' then
+        return keys.codes[value] ~= nil or nil, 'Unsupported UE keyboard/mouse key name'
+    end
     if field.type:find('Select$', 1) then
         for _, option in ipairs(params.options) do if option.value == value then return true end end
         return nil, 'Value is not an allowed option'
@@ -92,7 +101,9 @@ local fieldProperties = {key = true, type = true, label = true, description = tr
 local function parameters(source, field)
     if source.params ~= nil then return nil, 'Define parameters directly on the field, without params' end
     local allowed = {}
-    if field.type:find('Select$') then allowed.options = true
+    if field.type == 'ColorBox' or field.type == 'LuaKey' or field.type == 'BPKey' then
+        -- These controls have a fixed format, not numeric/text range parameters.
+    elseif field.type:find('Select$') then allowed.options = true
     elseif field.kind == 'number' or field.kind == 'integer' then
         allowed = {min = true, max = true, step = field.type:find('Slider$') ~= nil}
     elseif field.kind == 'string' then
@@ -156,6 +167,8 @@ end
 
 local function defaultValue(field)
     local params, kind = field.params, field.kind
+    if field.type == 'ColorBox' then return '#FFFFFF' end
+    if field.type == 'BPKey' then return 'None' end
     if field.type:find('Select$') then return params.options[1].value end
     if kind == 'boolean' then return false end
     if kind == 'string' then return '' end
@@ -205,6 +218,7 @@ function M.compile(source, id)
             if item.default ~= nil then field.default = item.default else field.default = defaultValue(field) end
             local valid, reason = M.validate(field, field.default)
             if not valid then return fail('Invalid default; specify a valid default or correct parameters: ' .. reason) end
+            if field.type == 'ColorBox' then field.default = field.default:upper() end
             schema.defaults[field.key] = field.default
         end
         schema.fields[#schema.fields + 1], schema.byKey[field.key] = field, field
@@ -216,7 +230,9 @@ function M.reconcile(schema, saved)
     local values = copy(schema.defaults)
     for key, value in pairs(saved) do
         local field = schema.byKey[key]
-        if field and schema.defaults[key] ~= nil and M.validate(field, value) then values[key] = value end
+        if field and schema.defaults[key] ~= nil and M.validate(field, value) then
+            values[key] = field.type == 'ColorBox' and value:upper() or value
+        end
     end
     return values
 end

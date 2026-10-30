@@ -15,6 +15,10 @@ local schema = {
     updateInPlace = false, -- Defaults to true.
     -- If false, implement onchange for every value field and manually assign the received config to your mod's config variable.
     fields = {
+        {key = "ColorOptionExample", type = "ColorBox", label = "Color preview", default = "#FF8800",
+            description = "Enter #RRGGBB. Preview while typing; Enter or focus loss saves.", onchange = onchange},
+        {key = "KeyOptionExample", type = "LuaKey", label = "Key binding", default = Key.F8,
+            description = "Click and press one key. Esc cancels. The value is a UE4SS numeric key code.", onchange = onchange},
         {key = "GeneralSection", type = "Separator", label = "基本设置"},
         {key = "Enabled", type = "BoolToggle", label = "布尔开关", default = true,
             description = "点击当前值切换开启或关闭，修改后打印配置。", onchange = onchange},

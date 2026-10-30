@@ -17,7 +17,7 @@ local function createChoice(owner, state, mod, row, value, changed, unbinds, def
     control:PopulateTextLabels(labels)
     control:SetSelectedItem(selected)
     control:SetIsInteractionEnabled(true)
-    control:SetIsFocusable(true)
+    control:SetIsFocusable(false) -- Hover is visual only; choices are mouse-operated.
     ui.replaceInputControl(row, old, control)
     row.Rotator_SettingValue = control
     local function bindClick(button, delta)
@@ -35,7 +35,7 @@ local function createChoice(owner, state, mod, row, value, changed, unbinds, def
         assert(ui.valid(button), 'Could not create native option arrow')
         ui.replaceInputControl(row, oldButton, button)
         button:SetIsInteractionEnabled(true)
-        button:SetIsFocusable(true)
+        button:SetIsFocusable(false)
         row[item[1]] = button
         bindClick(button, item[2])
     end
@@ -73,7 +73,7 @@ local function textInput(owner, row, control, wrapper, initialRaw, getValue)
         end}
 end
 
-local function createText(owner, state, mod, row, value, changed, unbinds)
+local function createText(owner, state, mod, row, value, changed, unbinds, definition, preview)
     local label = ui.inputTextStyleSource(row)
     assert(ui.valid(label), 'Native text font template is unavailable')
     local control = ui.native(row.WidgetTree, 'EditableText', 'TextInput')
@@ -87,19 +87,86 @@ local function createText(owner, state, mod, row, value, changed, unbinds)
     control.RevertTextOnEscape = true
     control.SelectAllTextWhenFocused = true
     control:SetText(FText(value))
-    local wrapper, unbind = ui.textInputRelay(owner, row, control, function() changed(true) end)
+    local wrapper, unbind = ui.textInputRelay(owner, row, control, function() changed(true) end, preview and function() preview(ui.fname(control:GetText())) end)
     unbinds[#unbinds + 1] = unbind
     local editor = textInput(owner, row, control, wrapper, value, function()
         local raw = ui.fname(control:GetText())
         return raw, raw
     end)
-    editor.setValue = function(current) control:SetText(FText(current)) end
+    editor.setValue = function(current) control:SetText(FText(current)); if preview then preview(current) end end
+    editor.wrapper = wrapper
     editor.setHighlighted = function(selected)
         control.WidgetStyle.ColorAndOpacity = selected and row.SelectedColor or row.DefaultColor
         -- Refresh the color with this editor's own font, not the template's selected style.
         control:SetFont(control.WidgetStyle.Font)
     end
     return editor
+end
+
+local function createColor(owner, state, mod, row, value, changed, unbinds)
+    local swatch = ui.native(row.WidgetTree, 'Border', 'ColorPreview')
+    swatch:SetVisibility(3)
+    local function preview(raw)
+        if not raw:match('^#%x%x%x%x%x%x$') then return end
+        local function channel(offset)
+            local v = tonumber(raw:sub(offset, offset + 1), 16) / 255
+            return v <= 0.04045 and v / 12.92 or ((v + 0.055) / 1.055) ^ 2.4
+        end
+        swatch:SetBrushColor({R = channel(2), G = channel(4), B = channel(6), A = 1})
+    end
+    local editor = createText(owner, state, mod, row, value, changed, unbinds, nil, preview)
+    local box = ui.native(row.WidgetTree, 'SizeBox', 'ColorPreviewSize')
+    box:SetWidthOverride(42); box:SetHeightOverride(32); box:AddChild(swatch)
+    -- Give text and preview separate layout space instead of overlapping them.
+    editor.control:RemoveFromParent()
+    local content = ui.native(row.WidgetTree, 'HorizontalBox', 'ColorInput')
+    local textSlot = content:AddChildToHorizontalBox(editor.control)
+    textSlot:SetVerticalAlignment(2)
+    textSlot:SetPadding({Left = 0, Top = 0, Right = 12, Bottom = 0})
+    content:AddChildToHorizontalBox(box):SetVerticalAlignment(2)
+    local slot = editor.wrapper:AddChildToOverlay(content)
+    slot:SetHorizontalAlignment(2); slot:SetVerticalAlignment(2)
+    preview(value)
+    local get = editor.getValue
+    editor.getValue = function()
+        local raw = get()
+        return raw:match('^#%x%x%x%x%x%x$') and raw:upper() or nil, raw
+    end
+    return editor
+end
+
+local function createKey(owner, state, mod, row, value, changed, unbinds, definition)
+    local keys = require('mcu_core.key_codes')
+    local button = ui.createGameWidget(owner, 'MenuButton_KeyBinding_C')
+    button:SetIsInteractionEnabled(true)
+    local current, stop = value, nil
+    local function display()
+        local name = definition.type == 'LuaKey' and keys.names[current] or current
+        local library = StaticFindObject('/Script/Engine.Default__KismetInputLibrary')
+        local label = name == 'None' and state.t('unbound') or ui.fname(library:Key_GetDisplayName({KeyName = FName(name)}, false))
+        button:SetCellText(FText(label))
+    end
+    ui.replaceInputControl(row, row.Rotator_SettingValue, button)
+    ui.hideArrows(row)
+    display()
+    unbinds[#unbinds + 1] = ui.onClick(button, function()
+        if not state.active or state.closed then return end
+        stop = ui.captureKey(owner, state, function(name)
+            if not keys.codes[name] or name == 'None' then return false end
+            current = definition.type == 'LuaKey' and keys.codes[name] or name
+            changed(true)
+            return true
+        end, function()
+            stop = nil
+            if ui.valid(button) then button:SetEditingVisual(false); display() end
+        end)
+        button:SetEditingVisual(true)
+        button:SetCellText(FText(state.t('press_key')))
+    end)
+    unbinds[#unbinds + 1] = function() if stop then stop() end end
+    return {control = button, initialRaw = value, isEditing = function() return stop ~= nil end,
+        getValue = function() return current, current end,
+        setValue = function(nextValue) current = nextValue; display() end}
 end
 
 local function numberText(value)
@@ -127,6 +194,7 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
     local steps = math.floor((params.max - params.min) / params.step + 1e-7)
     assert(steps >= 0 and steps <= 9007199254740991, 'Slider range has too many steps')
     local control = ui.native(row.WidgetTree, 'Slider', 'SchemaSlider', old:GetClass())
+    control.IsFocusable = false -- Set before inputRelay builds the Slate slider.
     for _, key in ipairs({'Textstyle', 'TextStyleCJK', 'BarMaterial'}) do
         local resource = ui.prop(old, key)
         if ui.valid(resource) then control[key] = resource end
@@ -228,7 +296,7 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
         end}
 end
 
-local creators = {BoolToggle = createChoice, IntSelect = createChoice, FloatSelect = createChoice,
+local creators = {ColorBox = createColor, LuaKey = createKey, BPKey = createKey, BoolToggle = createChoice, IntSelect = createChoice, FloatSelect = createChoice,
     TextSelect = createChoice, IntBox = createNumericText, FloatBox = createNumericText,
     TextBox = createText, IntSlider = createSlider, FloatSlider = createSlider}
 local M = {}

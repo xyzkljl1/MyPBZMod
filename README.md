@@ -185,11 +185,16 @@ local saved, err = mcu.ForceSaveConfig(config)
 | `IntSlider` | 整数滑动条 | 必填 `min/max/step` |
 | `FloatSlider` | 浮点数滑动条 | 必填 `min/max/step` |
 | `TextBox` | 文本输入框 | 可选 `minLength/maxLength/pattern` |
+| `ColorBox` | 颜色文本输入与预览 | 固定 `#RRGGBB`，保存为大写字符串 |
+| `LuaKey` | 单键绑定（Lua） | UE4SS 数字键码，默认值可用 `Key.F8`；`0` 为未绑定 |
+| `BPKey` | 单键绑定（蓝图） | 配置成员使用 Key 类型；文件保存 UE 按键名称；`None` 为未绑定 |
 | `IntSelect` | 整数选项 | 必填 `options` |
 | `FloatSelect` | 浮点数选项 | 必填 `options` |
 | `TextSelect` | 文本选项 | 必填 `options` |
 | `Button` | 操作按钮，不保存配置值 | 必填`onclick` |
 | `Separator` | 分割线，不保存配置值 | 无 |
+
+颜色编辑时仅合法的 `#RRGGBB` 更新预览；回车或失去焦点后保存，非法输入恢复已保存值。按键控件点击后捕获一个键盘或鼠标按键，松键确认，Esc 取消，不支持组合键、手柄或滚轮。LuaKey 的配置值与 onchange 参数都是数字键码；BPKey 的 Config 成员为 Key。MCU 负责保存配置，不自动注册或替换 Mod 的输入绑定；未绑定值不可直接传给 RegisterKeyBind。
 
 其中`options` 是非空数组，每项的 `value` 必填、`label` 可选，例如 `{{value = 1, label = "Low"}, {value = 2, label = "High"}}`。保存的是 `value`，不是下标或显示文字。
 
@@ -197,7 +202,7 @@ local saved, err = mcu.ForceSaveConfig(config)
 
 文本长度按 UTF-8 字符计算。`pattern` 是 **Lua pattern**，不是正则表达式；需要整串匹配时添加 `^` 和 `$`。
 
-`default`自动推导：布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
+`default`自动推导：ColorBox 为 `#FFFFFF`，LuaKey 为 `0`，BPKey 为 `None`；布尔为 `false`，文本为空，选项取第一项，滑动条取下限，数字输入以 `0` 为基础结合范围推导。若推导值不符合限制，初始化会失败，例如设置 `minLength = 1` 的文本需要非空默认值。
 
 ### 完整代码示例
 
@@ -268,7 +273,7 @@ printConfig(config)
 
 - 对于此种接入方式，恢复默认值按钮会根据scheam恢复默认配置并立刻生效。
 - 当schema变更时，如果旧的值得符合新schema中同一配置项的范围，则会保留，否则直接抛弃而使用默认值。
-- 仅停用 MCU 界面、保留共享模块时，Mod 仍能初始化配置。不要引用 MCU 界面的私有脚本，只使用共享模块公开接口。
+- Lua Mod 仅停用 MCU 界面、保留共享模块时，仍能初始化配置；蓝图接入需要启用 MCU。不要引用 MCU 界面的私有脚本，只使用共享模块公开接口。
 - 不要随你的 Mod 分发共享模块的重复副本，也不要分发运行时生成的 `.schemaconfig.json`。
 - MCU 自身文字跟随游戏语言；Mod 配置文字默认使用 schema，可通过下述语言包提供翻译。
 - 同一个 Mod 既注册 schema 又提供下方的simple json时，只有schema生效，文件夹名匹配不区分大小写。
@@ -299,6 +304,42 @@ printConfig(config)
 - 如果存在对应语言包，则从语言包的 `fields` 根据 `key`(options则按 `value` 匹配) 查找对应 `label`、`description` 覆盖原来的schema里的值。
 - 语言包只改变UI文字，不改变配置、UI生成和存储逻辑。Simple 接入暂不支持语言包。
 - 可参考 [MCUExample2 英文语言包](MCUExample2/platform/steam/ue4ss/Mods/MCUExample2/MCUExample2.lang.en.json)；其中文默认文字仍在 schema 中。
+
+### 蓝图 Mod 接入
+
+蓝图 Mod 同样使用 schema 配置，依赖启用的 MCU 及可用的蓝图 Mod 加载器，无需编写 Lua 或自行读写 JSON。完整可编辑示例：[MCUExample5](BPMod/MCUExample5/README.md)（UE 5.7.4）。
+
+1. 将 [MCU 蓝图 SDK](BPMod/ModConfigUI/README.md) 的 `Blueprint` 目录资产迁移到自己的工程，保留 `/Game/Mods/ModConfigUI/Blueprint/` 路径。SDK 由 MCU 安装包提供，不要重复打进自己的包。
+2. 在 `/Game/Mods/<ModName>/` 下的 Mod Actor 中添加 `BP_MCUConfigComponent` 组件。 `Fields` 使用 `ST_MCUFieldV1`，其中的选项使用 `ST_MCUOptionV1`；这两个共享结构体为冻结的 V1 接口，使用 MCU 提供的原始资产，不自行重建或修改。
+3. 定义自己的配置结构体，并创建该类型的 `Config` 变量。仅在 Actor 的类默认值 `Config` 中设置默认配置，不在字段描述中重复定义。
+4. 编辑组件的 `Fields` 数组，按显示顺序填写字段。`Key` 必须与结构体的成员名完全一致；按钮和分隔标题不需要结构体成员。
+5. 业务蓝图直接读取 `Config`，用结构体成员引脚取得明确类型的值，无需字符串 Getter。
+
+组件在 BeginPlay 自动执行 `InitFromFile`，从所属 Actor 的资产目录确定 Mod 名称。每个 Mod 同时只支持一个有效配置实例；组件结束或切换地图时注销，新的实例会重新读取保存值。
+
+| Fields 参数 | 用途 |
+| --- | --- |
+| `Key`、`Type`、`Label`、`Description` | 成员名、上表中的控件类型、显示名称、右侧说明 |
+| `UseMin` / `Min`、`UseMax` / `Max` | 启用数值上下限；两个 Slider 均必须启用 |
+| `Step` | Slider 的步长；Box 不使用此参数 |
+| `MinLength`、`MaxLength`、`Pattern` | TextBox 长度及 Lua pattern；长度为 `-1` 表示不限制，空 pattern 表示不限制 |
+| `Options` | Select 的有序选项；每项包含 `Label`，以及对应的 `IntValue`、`FloatValue` 或 `TextValue` |
+
+BoolToggle 对应 Boolean，Int 控件对应 Integer（32 位），Float 控件对应 **Double**，Text 和 ColorBox 控件对应 String，BPKey 对应 **Key（FKey）**。LuaKey 用于 Lua 接入；蓝图使用 BPKey。除 Key 外，暂不支持嵌套结构体、数组等配置值。文本长度、范围和步长等规则与 Lua schema 相同；整数不得超出 32 位范围。
+
+可在 Actor 中添加以下普通蓝图函数：
+
+| 函数 | 调用时机 |
+| --- | --- |
+| `OnConfigReady()` | 初始化成功、完整 `Config` 已载入后调用一次 |
+| `OnConfigChanged(Key: String)` | 完整 `Config` 更新后，按字段声明顺序对每个实际变化的配置项调用一次；Key 为字段名，直接读取 `Config` 中对应的强类型成员 |
+| `OnButtonClicked(Key: String)` | 点击 Button 时调用，Key 是按钮字段名；不保存配置 |
+
+初始化、非法值、保存失败或值未变化不会触发 `OnConfigChanged`。恢复全部默认值同样只对实际变化的配置项逐项通知，通知在游戏线程执行。无需定义旧配置变量。
+
+组件的 `IsReady` 可用于判断初始化是否完成；失败原因在 `Error` 和 UE4SS 日志中。示例通过 `BPML_GenericFunctions` 提供的 `PrintToModLoader` 输出日志，使用该打印功能时需启用此 Mod。
+
+配置文件和语言包沿用本节的 `.schemaconfig.json`、`.lang.<语言代码>.json` 约定。蓝图端不提供 ForceSave；业务代码自行改变 `Config` 不会保存或反向更新 MCU，下次同步时会被覆盖。不要随包发布运行时生成的配置文件。
 
 ## 二，轻量接入：simple json
 

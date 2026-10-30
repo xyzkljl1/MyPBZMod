@@ -1,8 +1,8 @@
 using UnrealBuildTool;
 using System.Collections.Generic;
-public class ProjectPBZEditorTarget : TargetRules
+public class ModConfigUIEditorTarget : TargetRules
 {
-    public ProjectPBZEditorTarget(TargetInfo Target) : base(Target)
+    public ModConfigUIEditorTarget(TargetInfo Target) : base(Target)
     {
         Type = TargetType.Editor;
         DefaultBuildSettings = BuildSettingsVersion.V6;

@@ -69,6 +69,11 @@ local function notify(record, changed, values, revision)
         record.events = {}
         if not record.active then return end
         for _, item in ipairs(events) do
+            if record.owner and not record.owner.alive() then return end
+            if record.owner then
+                local ok, err = pcall(record.owner.changed, item.values)
+                if not ok then log(record.schema.id .. ' Blueprint config update failed: ' .. tostring(err)); return end
+            end
             for _, change in ipairs(item.changed) do
                 if not record.active then return end
                 local field = change.field
@@ -122,7 +127,7 @@ function M.ForceSaveConfig(config)
         if record.schema.defaults[key] == nil then restore(record); return nil, 'Unknown value key: ' .. tostring(key) end
         local valid, reason = model.validate(field, value)
         if not valid then restore(record); return nil, key .. ': ' .. reason end
-        values[key] = value
+        values[key] = field.type == 'ColorBox' and value:upper() or value
     end
     for key in pairs(record.schema.defaults) do
         if values[key] == nil then restore(record); return nil, 'Missing configuration key: ' .. key end
@@ -138,7 +143,7 @@ local function applyChanges(record, patch)
         if record.schema.defaults[key] == nil then restore(record); return nil, 'Unknown value key: ' .. tostring(key) end
         local valid, reason = model.validate(field, value)
         if not valid then restore(record); return nil, key .. ': ' .. reason end
-        values[key] = value
+        values[key] = field.type == 'ColorBox' and value:upper() or value
     end
     return commit(record, values, patch)
 end
@@ -166,16 +171,8 @@ invokeButton = function(record, key)
     return true
 end
 
-function M.InitFromFile(source)
-    local level, id = 2
-    while not id do
-        local caller = debug.getinfo(level, 'S')
-        if not caller then break end
-        local path = caller.source:gsub('\\', '/'):gsub('^@', '')
-        id = ('/' .. path):match('/[Mm]ods/([^/]+)/[Ss]cripts/')
-        level = level + 1
-    end
-    if not id then return nil, 'InitFromFile must be called from Mods/<ModName>/Scripts/' end
+-- Internal registration shared by Lua callers and the Blueprint adapter.
+local function initialize(source, id, owner)
     local compiled, err = model.compile(source, id)
     if not compiled then return nil, err end
     local document, diskText
@@ -194,11 +191,11 @@ function M.InitFromFile(source)
         if old.endpoint then old.endpoint.active, old.endpoint.handler = false, nil end
     end
     local record = {schema = compiled, values = values,
-        diskText = text, revision = 0, active = true, events = {}}
+        diskText = text, revision = 0, active = true, events = {}, owner = owner}
     record.current = handle(record, record.values, record.revision)
     records[id] = record
     record.endpoint = transport.register(id, snapshot(record), function(request)
-        if not record.active then return nil, 'Configuration was reinitialized' end
+        if not record.active or (record.owner and not record.owner.alive()) then return nil, 'Configuration owner is no longer active' end
         if request.revision ~= record.revision then return nil, 'Stale configuration revision' end
         local result, reason
         if request.action == 'save' then
@@ -209,8 +206,30 @@ function M.InitFromFile(source)
         if not result then return nil, reason end
         return snapshot(record)
     end)
-    return record.current
+    return record.current, nil, function()
+        record.active, record.events = false, {}
+        transport.unregister(record.endpoint)
+        record.owner = nil
+        if records[id] == record then records[id] = nil end
+    end
 end
+
+function M.InitFromFile(source)
+    local level, id = 2
+    while not id do
+        local caller = debug.getinfo(level, 'S')
+        if not caller then break end
+        local path = caller.source:gsub('\\', '/'):gsub('^@', '')
+        id = ('/' .. path):match('/[Mm]ods/([^/]+)/[Ss]cripts/')
+        level = level + 1
+    end
+    if not id then return nil, 'InitFromFile must be called from Mods/<ModName>/Scripts/' end
+    local config, err = initialize(source, id)
+    return config, err
+end
+
+-- Private Blueprint adapter entry; not part of the public Lua API.
+M._InitBlueprint = initialize
 
 -- Remote metadata/commands are scheduled on the game thread without polling.
 -- The receiving mod retains its functions and performs all writes.

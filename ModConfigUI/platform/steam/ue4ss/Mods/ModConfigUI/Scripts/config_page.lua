@@ -197,7 +197,7 @@ local function actionHeading(owner, state, container, text, action, prominent, r
     button:SetVisibility(0)
     button:SetIsEnabled(true)
     button:SetIsInteractionEnabled(true)
-    button:SetIsFocusable(true)
+    button:SetIsFocusable(false)
     local unbindClick = ui.onClick(button, function()
         if state.active and not state.closed then M.clearHighlight(state); action() end
     end)
@@ -357,6 +357,17 @@ populateGroup = function(owner, state, group)
     log('Could not build ' .. group.name .. ': ' .. tostring(err) .. '; expand again to retry.')
 end
 
+local originalPopulate = populateGroup
+populateGroup = function(owner, state, group)
+    return ui.timed('group.expand:' .. group.name, originalPopulate, owner, state, group)
+end
+local originalAddInput = addConfigInput
+addConfigInput = function(owner, state, group, definition)
+    return ui.timed('control:' .. definition.type, originalAddInput, owner, state, group, definition)
+end
+local originalAddGroup = addModGroup
+addModGroup = function(...) return ui.timed('group.heading', originalAddGroup, ...) end
+
 local function refreshConfigRows(owner, state)
     local t, language = i18n.get()
     state.t, state.language = t, language
@@ -367,7 +378,7 @@ local function refreshConfigRows(owner, state)
         -- Get the registry first: a schema mod's simple file must not even be read.
         local schemaIds = {}
         for _, snapshot in ipairs(items) do schemaIds[snapshot.schema.id:lower()] = true end
-        local configs, issues = simpleConfigs.discover(schemaIds)
+        local configs, issues = ui.timed('simple.discover', simpleConfigs.discover, schemaIds)
         if not configs then
             log('Configuration discovery failed: ' .. tostring(issues))
             configs, issues = {}, {{name = 'simple', error = tostring(issues)}}
@@ -384,7 +395,7 @@ local function refreshConfigRows(owner, state)
         end
         for _, snapshot in ipairs(items) do
             combined[#combined + 1] = {key = 'schema:' .. snapshot.schema.id:lower(), name = snapshot.schema.id,
-                values = snapshot.values, fields = modLocalization.fields(snapshot.schema, language), snapshot = snapshot}
+                values = snapshot.values, fields = ui.timed('schema.localize', modLocalization.fields, snapshot.schema, language), snapshot = snapshot}
         end
         table.sort(combined, function(a, b) return a.key < b.key end)
         local rebuild = false
@@ -393,7 +404,7 @@ local function refreshConfigRows(owner, state)
             local group = (state.groups or {})[config.key]
             if not group or group.resetPending or not valid(group.body) then rebuild = true end
         end
-        local signature = encode({shape, language, issues})
+        local signature = ui.timed('catalog.signature', encode, {shape, language, issues})
         rebuild = rebuild or state.catalogNames ~= signature
         for _, field in ipairs(state.inputs or {}) do
             if not valid(field.control) then rebuild = true; break end
@@ -430,10 +441,12 @@ local function refreshConfigRows(owner, state)
         state.scroll:SetScrollOffset(offset)
         state.catalogNames = signature
     end
+    local requestedAt = os.clock()
     schemaConfigs.list(function(items, err)
+        log(string.format('[Timing] schema.list callback latency=%.1f ms (includes scheduling; not blocking time)', (os.clock() - requestedAt) * 1000))
         if state.refreshTicket ~= ticket or state.disposed then return end
         if not items then log('Schema discovery failed: ' .. tostring(err)); return end
-        render(items)
+        ui.timed('catalog.render', render, items)
     end)
 end
 

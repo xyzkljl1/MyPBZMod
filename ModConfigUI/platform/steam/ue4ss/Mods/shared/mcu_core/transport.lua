@@ -83,6 +83,18 @@ function M.register(id, snapshot, handler)
     return endpoint
 end
 
+function M.unregister(endpoint)
+    endpoint.active, endpoint.handler = false, nil
+    ExecuteInGameThread(function()
+        if endpoint.epoch and get(endpoint.id .. '.epoch') == endpoint.epoch then
+            set(endpoint.id .. '.snapshot', nil)
+            local registry = decode(get('registry')) or {}
+            registry[endpoint.id] = nil
+            set('registry', encode(registry))
+        end
+    end)
+end
+
 function M.publish(endpoint, snapshot)
     ExecuteInGameThread(function()
         if endpoint.active and endpoint.epoch and get(endpoint.id .. '.epoch') == endpoint.epoch then

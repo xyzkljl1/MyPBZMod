@@ -5,6 +5,7 @@ local TAG, TAB_ID = '[ModConfigUI] ', 'ModConfigUI'
 local classCache, assetAttempts = {}, {}
 local serial = 0
 local assets = {
+    MenuButton_KeyBinding_C = '/Game/PBZContent/UI/Menu/MenuButton_KeyBinding.MenuButton_KeyBinding_C',
     W_SettingsListEntry_Collection_Category_C = '/Game/PBZContent/UI/Settings/Editors/W_SettingsListEntry_Collection_Category.W_SettingsListEntry_Collection_Category_C',
     W_SettingsListEntry_Discrete_C = '/Game/PBZContent/UI/Settings/Editors/W_SettingsListEntry_Discrete.W_SettingsListEntry_Discrete_C',
     W_SettingsListEntry_Scalar_C = '/Game/PBZContent/UI/Settings/Editors/W_SettingsListEntry_Scalar.W_SettingsListEntry_Scalar_C',
@@ -12,6 +13,41 @@ local assets = {
 }
 
 local function log(value) print(TAG .. tostring(value) .. '\n') end
+-- Windows CRT os.clock measures elapsed milliseconds, including blocking calls.
+-- Aggregate nested work per operation; no timers, polling or per-widget log spam.
+local timing
+function M.timed(label, callback, ...)
+    local parent = timing
+    local frame = {started = os.clock(), children = 0, stats = parent and parent.stats or {}}
+    timing = frame
+    local result = table.pack(pcall(callback, ...))
+    local elapsed = (os.clock() - frame.started) * 1000
+    timing = parent
+    local stat = frame.stats[label] or {name = label, total = 0, own = 0, count = 0, peak = 0}
+    frame.stats[label] = stat
+    stat.total, stat.own = stat.total + elapsed, stat.own + math.max(0, elapsed - frame.children)
+    stat.count, stat.peak = stat.count + 1, math.max(stat.peak, elapsed)
+    if parent then
+        parent.children = parent.children + elapsed
+    elseif elapsed >= 5 then
+        local ranked, parts = {}, {}
+        for _, entry in pairs(frame.stats) do ranked[#ranked + 1] = entry end
+        table.sort(ranked, function(a, b) return a.own > b.own end)
+        for index = 1, math.min(6, #ranked) do
+            local entry = ranked[index]
+            parts[#parts + 1] = string.format('%s: own=%.1f total=%.1f max=%.1f ms n=%d',
+                entry.name, entry.own, entry.total, entry.peak, entry.count)
+        end
+        log(string.format('[Timing] %s %.1f ms%s | %s', label, elapsed,
+            result[1] and '' or ' FAILED', table.concat(parts, ' | ')))
+    end
+    if not result[1] then error(result[2], 0) end
+    return table.unpack(result, 2, result.n)
+end
+local function measured(label, callback)
+    return function(...) return M.timed(label, callback, ...) end
+end
+
 local function attempt(label, callback, ...)
     local ok, result = pcall(callback, ...)
     if not ok then log(label .. ': ' .. tostring(result)) end
@@ -100,6 +136,14 @@ local function createGameWidget(owner, shortName)
     assert(valid(widget), 'Create failed for ' .. shortName)
     -- Row shells are unbound to GameSetting; independent inputs replace their controls.
     widget.TickFrequency = 0 -- EWidgetTickFrequency::Never (verified in UE 5.7.4)
+    -- Only CommonButtonBase exposes SetIsFocusable to Lua; ordinary row shells do not.
+    if isA(widget, '/Script/CommonUI.CommonButtonBase') then
+        widget:SetIsFocusable(false)
+    else
+        widget.bIsFocusable = false
+    end
+    local action = prop(widget, 'Button_Action')
+    if valid(action) then action:SetIsFocusable(false) end
     widget:SetVisibility(4) -- SelfHitTestInvisible: children can receive input.
     return widget
 end
@@ -336,7 +380,41 @@ local function mountPage(owner, state)
     mountDetails(owner, state, copies)
 end
 
+local function setNativeResetHidden(state, hidden)
+    if not hidden then
+        for _, entry in pairs(state.hiddenResetButtons or {}) do
+            local button = entry.button
+            -- Action-bar entries are pooled and can be reassigned to Return_Game.
+            if valid(button) and fname(prop(button, 'InputActionRowName')) == 'RestoreToDefault'
+                and button:GetVisibility() == 1 then button:SetVisibility(entry.visibility) end
+        end
+        state.hiddenResetButtons = nil
+        return
+    end
+    -- Include both the panel's action bar and its enclosing settings host's bar.
+    local root = state.owner
+    local outer = root:GetOuter()
+    while valid(outer) and (isA(outer, '/Script/UMG.UserWidget') or isA(outer, '/Script/UMG.WidgetTree')) do
+        if isA(outer, '/Script/UMG.UserWidget') then root = outer end
+        outer = outer:GetOuter()
+    end
+    local entries = state.hiddenResetButtons or {}
+    state.hiddenResetButtons = entries
+    for _, button in ipairs(FindAllOf('WB_TriggerBoundButton_C') or {}) do
+        if valid(button) and fname(prop(button, 'InputActionRowName')) == 'RestoreToDefault' then
+            outer = button:GetOuter()
+            while valid(outer) and not same(outer, root) do outer = outer:GetOuter() end
+            if valid(outer) then
+                local key = address(button)
+                if not entries[key] then entries[key] = {button = button, visibility = button:GetVisibility()} end
+                button:SetVisibility(1) -- Collapsed; leave native bindings and settings untouched.
+            end
+        end
+    end
+end
+
 local function unmountPage(state)
+    setNativeResetHidden(state, false)
     M.setDetailsActive(state, false)
     if valid(state.detailsRoot) then state.detailsRoot:RemoveFromParent() end
     state.detailsRoot, state.detailsView, state.nativeDetailsRoot = nil, nil, nil
@@ -360,9 +438,18 @@ local function interactivePath(control, row)
     row:SetVisibility(4)
 end
 
+local function disableOldInput(control)
+    control:SetIsEnabled(false)
+    if isA(control, '/Script/CommonUI.CommonButtonBase') then
+        control:SetIsInteractionEnabled(false)
+        control:SetIsFocusable(false)
+    end
+end
+
 local function replaceInputControl(row, old, replacement)
     local parent, source = old:GetParent(), old.Slot
     assert(valid(parent) and valid(source), 'Native input control has no layout slot')
+    disableOldInput(old) -- Hidden native inputs must not keep handling navigation/actions.
     local slot
     if isA(parent, '/Script/UMG.ContentWidget') then
         local style = slotStyle(source)
@@ -387,7 +474,7 @@ local function hideArrows(row)
     for _, field in ipairs({'Button_Decrease', 'Button_Increase', 'DecreaseOverlay', 'IncreaseOverlay'}) do
         local button = prop(row, field)
         -- Native selection animations restore visibility; detached arrows stay absent.
-        if valid(button) then button:RemoveFromParent() end
+        if valid(button) then disableOldInput(button); button:RemoveFromParent() end
     end
 end
 
@@ -423,10 +510,24 @@ local inputHooks, activePages = {}, {}
 
 local function unhook(path)
     local hook = hooks[path]
-    if not hook then return end
+    if not hook then return true end
     hook.active = false -- Invalidate before UE4SS queues removal (or throws).
-    UnregisterHook(path, hook.pre, hook.post)
+    local current = StaticFindObject(path)
+    if not same(hook.fn, current) then
+        -- UnregisterHook resolves by path. Never apply old IDs to a replacement
+        -- UFunction, or keep retrying a function that has already disappeared.
+        hooks[path] = nil
+        return true
+    end
+    if hook.removeFailed then return false end
+    local ok, err = pcall(UnregisterHook, path, hook.pre, hook.post)
+    if not ok then
+        hook.removeFailed = true -- No blind re-registration after uncertain removal.
+        log('Could not release hook ' .. path .. ': ' .. tostring(err))
+        return false
+    end
     hooks[path] = nil
+    return true
 end
 
 -- Fixed PBZ functions only; native puerts overrides need the post-hook argument.
@@ -434,7 +535,7 @@ function M.hook(path, callback)
     local fn = StaticFindObject(path)
     if not valid(fn) then return false end
     if hooks[path] and hooks[path].active and same(hooks[path].fn, fn) then return true end
-    if hooks[path] then unhook(path) end
+    if hooks[path] and not unhook(path) then return false end
     local hook = {fn = fn, active = true} -- Identity is unique to this registration.
     local function dispatch(context)
         if not hook.active or hooks[path] ~= hook then return end
@@ -457,6 +558,7 @@ function M.inputHook(path, callback)
 end
 
 function M.setInputActive(state, active)
+    if not active and state.cancelCapture then state.cancelCapture() end
     activePages[state] = active and true or nil
     local enabled = next(activePages) ~= nil
     local changed = 0
@@ -464,8 +566,7 @@ function M.setInputActive(state, active)
         if enabled and (not hooks[path] or not hooks[path].active) then
             if M.hook(path, callback) then changed = changed + 1 end
         elseif not enabled and hooks[path] then
-            unhook(path)
-            changed = changed + 1
+            if unhook(path) then changed = changed + 1 end
         end
     end
     if changed > 0 then log('Input hooks ' .. (enabled and 'enabled: ' or 'released: ') .. changed) end
@@ -492,7 +593,7 @@ end
 
 -- The hidden blueprint child owns text delegate binding and stays alive with the row.
 -- Only its dedicated function is hooked; inputHooks handles menu activation/cleanup.
-function M.textInputRelay(owner, row, control, callback)
+function M.textInputRelay(owner, row, control, callback, preview)
     local package = '/Game/Mods/ModConfigUI/W_TextInputBridge'
     local classPath = package .. '.W_TextInputBridge_C'
     local class = StaticFindObject(classPath)
@@ -513,15 +614,67 @@ function M.textInputRelay(owner, row, control, callback)
     if not entries then entries = {}; signals[path] = entries end
     assert(M.inputHook(path, function(object) dispatch(entries, object) end), 'MCU text commit function unavailable')
     local unbind = bind(entries, receiver, callback)
+    local unbindPreview
+    if preview then
+        local changedPath = classPath .. ':MCUTextChanged'
+        signals[changedPath] = signals[changedPath] or {}
+        local changedEntries = signals[changedPath]
+        assert(M.inputHook(changedPath, function(object) dispatch(changedEntries, object) end))
+        unbindPreview = bind(changedEntries, receiver, preview)
+    end
     local ok, err = pcall(function() receiver:BindInput(control) end)
-    if not ok then unbind(); receiver:RemoveFromParent(); error(err, 0) end
+    if not ok then unbind(); if unbindPreview then unbindPreview() end; receiver:RemoveFromParent(); error(err, 0) end
     return wrapper, function()
         unbind()
+        if unbindPreview then unbindPreview() end
         if valid(receiver) then
             if valid(control) then receiver:UnbindInput() end
             receiver:RemoveFromParent()
         end
     end
+end
+
+-- One focused capture surface, removed on completion, page close or travel.
+function M.captureKey(owner, state, callback, finished)
+    if state.cancelCapture then state.cancelCapture() end
+    local package = '/Game/Mods/ModConfigUI/W_KeyCapture'
+    local classPath = package .. '.W_KeyCapture_C'
+    local class = StaticFindObject(classPath)
+    if not valid(class) then
+        class = StaticFindObject('/Script/AssetRegistry.Default__AssetRegistryHelpers'):GetAsset(
+            {PackageName = FName(package), AssetName = FName('W_KeyCapture_C')})
+    end
+    assert(valid(class), 'Install the updated MCU Blueprint package and restart the game')
+    local receiver = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary'):Create(owner, class, owner:GetOwningPlayer())
+    receiver.TickFrequency = 0
+    local path = classPath .. ':MCUKeyCaptured'
+    signals[path] = signals[path] or {}
+    local entries = signals[path]
+    -- Capture owns this hook; it must be released while its receiver/class is
+    -- still alive, rather than retained in the menu-wide input hook catalogue.
+    assert(M.hook(path, function(object) dispatch(entries, object) end))
+    local unbind, stopped
+    local function stop()
+        if stopped then return end
+        stopped = true
+        if state.cancelCapture == stop then state.cancelCapture = nil end
+        if unbind then unbind() end
+        if not next(entries) then unhook(path) end
+        if valid(receiver) then receiver:RemoveFromParent() end
+        if finished then finished() end
+    end
+    unbind = bind(entries, receiver, function()
+        local name = fname(receiver.CapturedKey.KeyName)
+        if name == 'Escape' then stop()
+        elseif callback(name) then stop() end
+    end)
+    state.cancelCapture = stop
+    local ok, err = pcall(function()
+        receiver:AddToViewport(10000)
+        receiver:SetKeyboardFocus()
+    end)
+    if not ok then stop(); error(err, 0) end
+    return stop
 end
 
 -- Slider delegates still use a collapsed native receiver until their migration.
@@ -728,11 +881,13 @@ function M.menu(page)
     local function updateSelection(state, visible)
         local owner, tabs, wasActive = state.owner, state.tabs, state.active
         if not valid(owner) or not valid(tabs) or not valid(state.page) then
+            setNativeResetHidden(state, false)
             state.active = false
             M.setInputActive(state, false)
             return
         end
         local active = fname(tabs:GetSelectedTabId()) == TAB_ID and visible
+        setNativeResetHidden(state, active)
         M.setInputActive(state, active)
         if active then
             if not wasActive then
@@ -828,9 +983,20 @@ function M.menu(page)
     end
 
 
-    return {observeLayout = observeLayout, tryInitialize = tryInitialize, refreshTabButton = refreshTabButton,
-        updateSelection = updateSelection, dispose = dispose}
+    return {observeLayout = observeLayout,
+        tryInitialize = measured('menu.initialize', tryInitialize),
+        refreshTabButton = measured('menu.tabStyle', refreshTabButton),
+        updateSelection = measured('menu.selection', updateSelection), dispose = dispose}
 end
+
+gameClass = measured('assets.resolveClass', gameClass)
+createGameWidget = measured('widgets.createGameWidget', createGameWidget)
+native = measured('widgets.constructNative', native)
+mountPage = measured('layout.mountPage', mountPage)
+setNativeResetHidden = measured('menu.resetAction', setNativeResetHidden)
+M.setInputActive = measured('hooks.activateOrRelease', M.setInputActive)
+local originalHook = M.hook
+M.hook = function(path, callback) return M.timed('hook:' .. path, originalHook, path, callback) end
 
 M.valid, M.same, M.address, M.prop, M.isA = valid, same, address, prop, isA
 M.fname, M.log, M.attempt = fname, log, attempt

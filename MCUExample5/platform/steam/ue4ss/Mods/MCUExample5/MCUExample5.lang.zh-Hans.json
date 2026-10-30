@@ -1,0 +1,97 @@
+{
+  "fields": {
+    "Basics": {
+      "label": "蓝图配置示例"
+    },
+    "BoolOptionExample": {
+      "label": "布尔开关示例",
+      "description": "启用或关闭此示例选项。"
+    },
+    "IntOptionExample": {
+      "label": "整数输入示例",
+      "description": "输入 0 至 100 的整数。"
+    },
+    "FloatOptionExample": {
+      "label": "浮点输入示例",
+      "description": "输入 0 至 10 的数值。"
+    },
+    "IntSliderExample": {
+      "label": "整数滑动条示例",
+      "description": "在 0 至 100 之间拖动，每步为 5。"
+    },
+    "FloatSliderExample": {
+      "label": "浮点滑动条示例",
+      "description": "在 0 至 1 之间拖动，每步为 0.1。"
+    },
+    "TextOptionExample": {
+      "label": "文本输入示例",
+      "description": "输入 1 至 40 个字符，回车或移开焦点后提交。"
+    },
+    "IntSelectExample": {
+      "label": "整数多选一示例",
+      "description": "保存的是整数值，不是选项的位置。",
+      "options": [
+        {
+          "value": 1,
+          "label": "低"
+        },
+        {
+          "value": 2,
+          "label": "标准"
+        },
+        {
+          "value": 3,
+          "label": "高"
+        }
+      ]
+    },
+    "FloatSelectExample": {
+      "label": "浮点多选一示例",
+      "description": "保存的是双精度数值，不是选项文字。",
+      "options": [
+        {
+          "value": 0.25,
+          "label": "低"
+        },
+        {
+          "value": 0.5,
+          "label": "标准"
+        },
+        {
+          "value": 1,
+          "label": "高"
+        }
+      ]
+    },
+    "TextSelectExample": {
+      "label": "文本多选一示例",
+      "description": "保存的字符串与显示文字相互独立。",
+      "options": [
+        {
+          "value": "low",
+          "label": "低"
+        },
+        {
+          "value": "normal",
+          "label": "标准"
+        },
+        {
+          "value": "high",
+          "label": "高"
+        }
+      ]
+    },
+    "PrintConfig": {
+      "label": "这是一个按钮",
+      "description": "打印强类型 Config 中的配置值，不保存配置。"
+    },
+    "ColorOptionExample": {
+      "label": "颜色预览示例",
+      "description": "输入 #RRGGBB，合法颜色即时预览，回车或移开焦点后保存。"
+    },
+    "KeyOptionExample": {
+      "label": "按键绑定示例",
+      "description": "点击后按一个键盘或鼠标按键，Esc 取消。蓝图配置值为 Key 类型。"
+    }
+  }
+}

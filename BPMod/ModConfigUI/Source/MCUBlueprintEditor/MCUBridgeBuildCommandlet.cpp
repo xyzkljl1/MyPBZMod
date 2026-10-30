@@ -4,6 +4,12 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/EditableText.h"
 #include "Components/VerticalBox.h"
+#include "Components/Border.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Kismet/KismetInputLibrary.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_FunctionResult.h"
+#include "InputCoreTypes.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
 #include "EdGraphSchema_K2.h"
@@ -17,6 +23,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "KismetCompiler.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 
@@ -76,28 +83,98 @@ void DelegateGraph(UBlueprint* BP, const FName Name, bool Add, const FEdGraphPin
         Get->AllocateDefaultPins();
         Input = Get->FindPinChecked(FName("BoundInput"));
     }
+    for (const FName Event : {FName("OnTextCommitted"), FName("OnTextChanged")})
+    {
     UK2Node_BaseMCDelegate* Bind = Add
         ? static_cast<UK2Node_BaseMCDelegate*>(Node<UK2Node_AddDelegate>(Graph))
         : static_cast<UK2Node_BaseMCDelegate*>(Node<UK2Node_RemoveDelegate>(Graph));
-    auto* Property = FindFProperty<FMulticastDelegateProperty>(UEditableText::StaticClass(), "OnTextCommitted");
+    auto* Property = FindFProperty<FMulticastDelegateProperty>(UEditableText::StaticClass(), Event);
     Bind->SetFromProperty(Property, false, UEditableText::StaticClass());
     Bind->AllocateDefaultPins();
     auto* Delegate = Node<UK2Node_CreateDelegate>(Graph);
     Delegate->AllocateDefaultPins();
-    Delegate->SetFunction("MCUTextCommitted");
+    Delegate->SetFunction(Event == "OnTextCommitted" ? "MCUTextCommitted" : "MCUTextChanged");
     Link(Delegate->GetDelegateOutPin(), Bind->GetDelegatePin());
     Link(Input, Bind->FindPinChecked(UEdGraphSchema_K2::PN_Self));
     Link(Exec, Bind->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
+    Exec = Bind->FindPinChecked(UEdGraphSchema_K2::PN_Then);
+    }
     if (!Add)
     {
         auto* Clear = Set(Graph, "BoundInput");
-        Link(Bind->FindPinChecked(UEdGraphSchema_K2::PN_Then), Clear->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
+        Link(Exec, Clear->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
     }
+}
+
+// A focused, viewport-sized capture surface handles keys before they reach the
+// game viewport. No tick, global key hook, input-mode mutation or runtime C++.
+bool BuildKeyCapture()
+{
+    const FString Path = TEXT("/Game/Mods/ModConfigUI/W_KeyCapture");
+    auto* Factory = NewObject<UWidgetBlueprintFactory>();
+    Factory->ParentClass = UUserWidget::StaticClass();
+    auto* BP = CastChecked<UWidgetBlueprint>(Factory->FactoryCreateNew(UWidgetBlueprint::StaticClass(),
+        CreatePackage(*Path), "W_KeyCapture", RF_Public | RF_Standalone, nullptr, GWarn));
+    auto* Surface = BP->WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), "CaptureSurface");
+    Surface->SetBrushColor(FLinearColor::Transparent);
+    BP->WidgetTree->RootWidget = Surface;
+    FEdGraphPinType KeyType; KeyType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+    KeyType.PinSubCategoryObject = TBaseStructure<FKey>::Get();
+    FBlueprintEditorUtils::AddMemberVariable(BP, "CapturedKey", KeyType);
+    Function(BP, "MCUKeyCaptured");
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+    for (FName Name : {FName("OnPreviewKeyDown"), FName("OnKeyUp"), FName("OnKeyChar"),
+        FName("OnMouseButtonDown"), FName("OnMouseButtonUp"), FName("OnMouseWheel")})
+    {
+        auto* Graph = FBlueprintEditorUtils::CreateNewGraph(BP, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+        FBlueprintEditorUtils::AddFunctionGraph(BP, Graph, false, UUserWidget::StaticClass());
+        UK2Node_FunctionEntry* Entry = nullptr; UK2Node_FunctionResult* Result = nullptr;
+        for (UEdGraphNode* N : Graph->Nodes) {
+            if (auto* E = Cast<UK2Node_FunctionEntry>(N)) Entry = E;
+            if (auto* R = Cast<UK2Node_FunctionResult>(N)) Result = R;
+        }
+        if (!Entry || !Result) return false;
+        ClearDefaultExecution(Entry);
+        auto* Exec = Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then);
+        if (Name == "OnKeyUp" || Name == "OnMouseButtonUp")
+        {
+            auto* Key = Node<UK2Node_CallFunction>(Graph);
+            Key->FunctionReference.SetExternalMember(Name == "OnKeyUp" ? "GetKey" : "PointerEvent_GetEffectingButton", UKismetInputLibrary::StaticClass());
+            Key->AllocateDefaultPins();
+            Link(Entry->FindPinChecked(Name == "OnKeyUp" ? FName("InKeyEvent") : FName("MouseEvent")), Key->FindPinChecked(FName("Input")));
+            auto* Store = Set(Graph, "CapturedKey");
+            Link(Exec, Store->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
+            Link(Key->FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue), Store->FindPinChecked(FName("CapturedKey")));
+            auto* Notify = Node<UK2Node_CallFunction>(Graph);
+            Notify->FunctionReference.SetSelfMember("MCUKeyCaptured"); Notify->AllocateDefaultPins();
+            Link(Store->FindPinChecked(UEdGraphSchema_K2::PN_Then), Notify->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
+            Exec = Notify->FindPinChecked(UEdGraphSchema_K2::PN_Then);
+        }
+        auto* Handled = Node<UK2Node_CallFunction>(Graph);
+        Handled->FunctionReference.SetExternalMember("Handled", UWidgetBlueprintLibrary::StaticClass()); Handled->AllocateDefaultPins();
+        Link(Exec, Result->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
+        Link(Handled->FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue), Result->FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue));
+    }
+    FCompilerResultsLog Results;
+    FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::None, &Results);
+    if (Results.NumErrors) return false;
+    auto* CDO = CastChecked<UUserWidget>(BP->GeneratedClass->GetDefaultObject());
+    CDO->SetIsFocusable(true);
+    FindFProperty<FEnumProperty>(BP->GeneratedClass, "TickFrequency")->GetUnderlyingProperty()->SetIntPropertyValue(
+        FindFProperty<FEnumProperty>(BP->GeneratedClass, "TickFrequency")->ContainerPtrToValuePtr<void>(CDO), int64(0));
+    FSavePackageArgs Args; Args.TopLevelFlags = RF_Public | RF_Standalone;
+    return UPackage::SavePackage(BP->GetOutermost(), BP,
+        *FPackageName::LongPackageNameToFilename(Path, FPackageName::GetAssetPackageExtension()), Args);
 }
 }
 
 int32 UMCUBridgeBuildCommandlet::Main(const FString& Params)
 {
+    if (!FParse::Param(*Params, TEXT("OverwriteGeneratedAssets")))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Regeneration replaces the Blueprint graph and discards manual edits. Pass -OverwriteGeneratedAssets explicitly."));
+        return 6;
+    }
     const FString PackageName = TEXT("/Game/Mods/ModConfigUI/W_TextInputBridge");
     UPackage* Package = CreatePackage(*PackageName);
     auto* Factory = NewObject<UWidgetBlueprintFactory>();
@@ -119,6 +196,8 @@ int32 UMCUBridgeBuildCommandlet::Main(const FString& Params)
     Link(Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then), StoreText->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
     Link(Entry->FindPinChecked(FName("Text")), StoreText->FindPinChecked(FName("LastCommittedText")));
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+    auto* ChangedProperty = FindFProperty<FMulticastDelegateProperty>(UEditableText::StaticClass(), "OnTextChanged");
+    Function(BP, "MCUTextChanged", ChangedProperty->SignatureFunction);
     DelegateGraph(BP, "BindInput", true, InputType);
     DelegateGraph(BP, "UnbindInput", false, InputType);
     FCompilerResultsLog Results;
@@ -145,5 +224,5 @@ int32 UMCUBridgeBuildCommandlet::Main(const FString& Params)
     SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
     if (!UPackage::SavePackage(Package, BP, *Filename, SaveArgs)) return 5;
     UE_LOG(LogTemp, Display, TEXT("MCU_BRIDGE_CREATED %s"), *Filename);
-    return 0;
+    return BuildKeyCapture() ? 0 : 7;
 }
