@@ -1,0 +1,3 @@
+#include "BasicAttributeSet.h"
+#include "Modules/ModuleManager.h"
+IMPLEMENT_MODULE(FDefaultModuleImpl, CharacterBasics)

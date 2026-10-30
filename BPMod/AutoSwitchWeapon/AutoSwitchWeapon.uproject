@@ -1,0 +1,14 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.7",
+  "Plugins": [
+    {"Name": "GameplayAbilities", "Enabled": true},
+    {"Name": "EnhancedInput", "Enabled": true}
+  ],
+  "Modules": [
+    {"Name": "CharacterBasics", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "SGameCombatSystem", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "SGameActorState", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "AutoSwitchWeaponEditor", "Type": "Editor", "LoadingPhase": "Default"}
+  ]
+}
