@@ -1,5 +1,5 @@
 -- ModConfigUI: native settings tab for existing simple JSON configurations.
-local VERSION = '1.0'
+local VERSION = '1.1'
 local ui = require('native_ui')
 require('blueprint_config').start()
 local page = require('config_page')
