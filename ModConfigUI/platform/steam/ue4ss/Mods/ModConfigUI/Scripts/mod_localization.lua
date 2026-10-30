@@ -25,6 +25,7 @@ local function readPack(path)
     return pack
 end
 
+-- File I/O and translation copies run only on the background worker.
 function M.fields(schema, language)
     -- Both names are supplied by MCU, not by the language pack.
     if not model.validId(schema.id) or not language:match('^[%a][%w%-]*$') then return schema.fields end

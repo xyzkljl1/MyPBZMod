@@ -19,6 +19,7 @@
 #include "K2Node_AddDelegate.h"
 #include "K2Node_RemoveDelegate.h"
 #include "K2Node_CreateDelegate.h"
+#include "K2Node_CustomEvent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "KismetCompiler.h"
@@ -53,6 +54,19 @@ UK2Node_FunctionEntry* Function(UBlueprint* BP, const FName Name, UFunction* Sig
 void ClearDefaultExecution(UK2Node_FunctionEntry* Entry)
 {
     Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then)->BreakAllPinLinks();
+}
+void CustomEvent(UBlueprint* BP, FName Name)
+{
+    auto* Event = Node<UK2Node_CustomEvent>(BP->UbergraphPages[0]);
+    Event->CustomFunctionName = Name;
+    Event->AllocateDefaultPins();
+}
+void Notify(UBlueprint* BP, UEdGraph* Graph, UEdGraphPin* Exec, FName Name)
+{
+    auto* Call = Node<UK2Node_CallFunction>(Graph);
+    Call->FunctionReference.SetSelfMember(Name);
+    Call->AllocateDefaultPins();
+    Link(Exec, Call->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
 }
 UK2Node_VariableSet* Set(UEdGraph* Graph, const FName Name)
 {
@@ -121,7 +135,7 @@ bool BuildKeyCapture()
     FEdGraphPinType KeyType; KeyType.PinCategory = UEdGraphSchema_K2::PC_Struct;
     KeyType.PinSubCategoryObject = TBaseStructure<FKey>::Get();
     FBlueprintEditorUtils::AddMemberVariable(BP, "CapturedKey", KeyType);
-    Function(BP, "MCUKeyCaptured");
+    CustomEvent(BP, "MCU_KeyCaptured");
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
     for (FName Name : {FName("OnPreviewKeyDown"), FName("OnKeyUp"), FName("OnKeyChar"),
         FName("OnMouseButtonDown"), FName("OnMouseButtonUp"), FName("OnMouseWheel")})
@@ -146,7 +160,7 @@ bool BuildKeyCapture()
             Link(Exec, Store->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
             Link(Key->FindPinChecked(UEdGraphSchema_K2::PN_ReturnValue), Store->FindPinChecked(FName("CapturedKey")));
             auto* Notify = Node<UK2Node_CallFunction>(Graph);
-            Notify->FunctionReference.SetSelfMember("MCUKeyCaptured"); Notify->AllocateDefaultPins();
+            Notify->FunctionReference.SetSelfMember("MCU_KeyCaptured"); Notify->AllocateDefaultPins();
             Link(Store->FindPinChecked(UEdGraphSchema_K2::PN_Then), Notify->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
             Exec = Notify->FindPinChecked(UEdGraphSchema_K2::PN_Then);
         }
@@ -189,15 +203,21 @@ int32 UMCUBridgeBuildCommandlet::Main(const FString& Params)
     FEdGraphPinType TextType;
     TextType.PinCategory = UEdGraphSchema_K2::PC_Text;
     FBlueprintEditorUtils::AddMemberVariable(BP, "LastCommittedText", TextType);
+    CustomEvent(BP, "MCU_TextCommitted");
+    CustomEvent(BP, "MCU_TextChanged");
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
     auto* Property = FindFProperty<FMulticastDelegateProperty>(UEditableText::StaticClass(), "OnTextCommitted");
     auto* Entry = Function(BP, "MCUTextCommitted", Property->SignatureFunction);
     ClearDefaultExecution(Entry);
     auto* StoreText = Set(Entry->GetGraph(), "LastCommittedText");
     Link(Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then), StoreText->FindPinChecked(UEdGraphSchema_K2::PN_Execute));
     Link(Entry->FindPinChecked(FName("Text")), StoreText->FindPinChecked(FName("LastCommittedText")));
+    Notify(BP, Entry->GetGraph(), StoreText->FindPinChecked(UEdGraphSchema_K2::PN_Then), "MCU_TextCommitted");
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
     auto* ChangedProperty = FindFProperty<FMulticastDelegateProperty>(UEditableText::StaticClass(), "OnTextChanged");
-    Function(BP, "MCUTextChanged", ChangedProperty->SignatureFunction);
+    auto* Changed = Function(BP, "MCUTextChanged", ChangedProperty->SignatureFunction);
+    ClearDefaultExecution(Changed);
+    Notify(BP, Changed->GetGraph(), Changed->FindPinChecked(UEdGraphSchema_K2::PN_Then), "MCU_TextChanged");
     DelegateGraph(BP, "BindInput", true, InputType);
     DelegateGraph(BP, "UnbindInput", false, InputType);
     FCompilerResultsLog Results;

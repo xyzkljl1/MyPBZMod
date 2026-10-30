@@ -6,7 +6,7 @@ public class MCUBlueprintEditor : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new string[] {
             "Core", "CoreUObject", "Engine", "UnrealEd", "BlueprintGraph",
-            "KismetCompiler", "UMG", "UMGEditor", "Slate", "SlateCore", "InputCore"
+            "KismetCompiler", "UMG", "UMGEditor", "Slate", "SlateCore", "InputCore", "CommonUI"
         });
     }
 }

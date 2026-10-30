@@ -3,7 +3,7 @@
 local ui = require('native_ui')
 local numbers = require('number_format')
 local function idle() return false end
-local function createChoice(owner, state, mod, row, value, changed, unbinds, definition)
+local function createChoice(owner, state, mod, row, value, changed, unbinds, definition, eventHost)
     local choices = definition.params.options or {{value = false, label = state.t('off')}, {value = true, label = state.t('on')}}
     local labels, selected = {}, 0
     for index, item in ipairs(choices) do
@@ -21,7 +21,7 @@ local function createChoice(owner, state, mod, row, value, changed, unbinds, def
     ui.replaceInputControl(row, old, control)
     row.Rotator_SettingValue = control
     local function bindClick(button, delta)
-        unbinds[#unbinds + 1] = ui.onClick(button, function()
+        unbinds[#unbinds + 1] = ui.onClick(eventHost, button, function()
             if state.active and not state.closed and ui.valid(control) then
                 control:SetSelectedItem((control:GetSelectedIndex() + delta) % #choices)
                 changed()
@@ -44,9 +44,6 @@ local function createChoice(owner, state, mod, row, value, changed, unbinds, def
         local overlay = ui.prop(row, name)
         if ui.valid(overlay) then overlay:SetVisibility(4) end
     end
-    unbinds[#unbinds + 1] = ui.onOptionSelected(control, function()
-        if state.active and not state.closed and (state.expanded or {})[mod] then changed() end
-    end)
     return {control = control, initialRaw = value, isEditing = idle,
         getValue = function()
             local current = choices[control:GetSelectedIndex() + 1].value
@@ -78,7 +75,7 @@ local function createText(owner, state, mod, row, value, changed, unbinds, defin
     assert(ui.valid(label), 'Native text font template is unavailable')
     local control = ui.native(row.WidgetTree, 'EditableText', 'TextInput')
     control:SetFont(label.Font)
-    control.WidgetStyle.ColorAndOpacity = label.ColorAndOpacity
+    control.WidgetStyle.ColorAndOpacity = ui.textColor(false)
     control:SetJustification(1)
     control:SetIsReadOnly(false)
     control:SetIsPassword(false)
@@ -96,7 +93,7 @@ local function createText(owner, state, mod, row, value, changed, unbinds, defin
     editor.setValue = function(current) control:SetText(FText(current)); if preview then preview(current) end end
     editor.wrapper = wrapper
     editor.setHighlighted = function(selected)
-        control.WidgetStyle.ColorAndOpacity = selected and row.SelectedColor or row.DefaultColor
+        control.WidgetStyle.ColorAndOpacity = ui.textColor(selected)
         -- Refresh the color with this editor's own font, not the template's selected style.
         control:SetFont(control.WidgetStyle.Font)
     end
@@ -135,21 +132,30 @@ local function createColor(owner, state, mod, row, value, changed, unbinds)
     return editor
 end
 
-local function createKey(owner, state, mod, row, value, changed, unbinds, definition)
+local function createKey(owner, state, mod, row, value, changed, unbinds, definition, eventHost)
     local keys = require('mcu_core.key_codes')
     local button = ui.createGameWidget(owner, 'MenuButton_KeyBinding_C')
     button:SetIsInteractionEnabled(true)
     local current, stop = value, nil
+    local function highlight(selected)
+        local color = ui.textColor(selected).SpecifiedColor
+        -- The native cell reapplies these colors when its text/hover state changes.
+        button.CellTextColor = color
+        button.EditingPromptTextColor = color
+        button:RefreshCellVisual()
+        ui.setTextColor(button.CellText, selected)
+    end
     local function display()
         local name = definition.type == 'LuaKey' and keys.names[current] or current
         local library = StaticFindObject('/Script/Engine.Default__KismetInputLibrary')
         local label = name == 'None' and state.t('unbound') or ui.fname(library:Key_GetDisplayName({KeyName = FName(name)}, false))
         button:SetCellText(FText(label))
+        highlight(row:GetSelected())
     end
     ui.replaceInputControl(row, row.Rotator_SettingValue, button)
     ui.hideArrows(row)
     display()
-    unbinds[#unbinds + 1] = ui.onClick(button, function()
+    unbinds[#unbinds + 1] = ui.onClick(eventHost, button, function()
         if not state.active or state.closed then return end
         stop = ui.captureKey(owner, state, function(name)
             if not keys.codes[name] or name == 'None' then return false end
@@ -164,7 +170,8 @@ local function createKey(owner, state, mod, row, value, changed, unbinds, defini
         button:SetCellText(FText(state.t('press_key')))
     end)
     unbinds[#unbinds + 1] = function() if stop then stop() end end
-    return {control = button, initialRaw = value, isEditing = function() return stop ~= nil end,
+    return {control = button, initialRaw = value, setHighlighted = highlight,
+        isEditing = function() return stop ~= nil end,
         getValue = function() return current, current end,
         setValue = function(nextValue) current = nextValue; display() end}
 end
@@ -194,7 +201,7 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
     local steps = math.floor((params.max - params.min) / params.step + 1e-7)
     assert(steps >= 0 and steps <= 9007199254740991, 'Slider range has too many steps')
     local control = ui.native(row.WidgetTree, 'Slider', 'SchemaSlider', old:GetClass())
-    control.IsFocusable = false -- Set before inputRelay builds the Slate slider.
+    control.IsFocusable = false -- Set before the bridge builds the Slate slider.
     for _, key in ipairs({'Textstyle', 'TextStyleCJK', 'BarMaterial'}) do
         local resource = ui.prop(old, key)
         if ui.valid(resource) then control[key] = resource end
@@ -218,11 +225,12 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
     control:SetMinValue(0); control:SetMaxValue(1)
     control:SetStepSize(steps > 0 and 1 / steps or 1)
     control:SetLocked(steps == 0)
-    local current, previous, captured = value, nil, false
+    local current, previous, captured, highlighted = value, nil, false, false
     local left, right, valueSlot
     local function display()
         control:SetDisplayValue(FText('')) -- Use only the label below the thumb.
         ui.setText(row.CurrentValue, numbers.text(current))
+        ui.setTextColor(row.CurrentValue, highlighted)
         for _, label in ipairs({row.CurrentValue, left, right}) do label:SetVisibility(4) end
         row.CurrentValue:SetRenderOpacity(1)
         local fraction = steps > 0 and ((current - params.min) / params.step) / steps or 0
@@ -239,7 +247,11 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
         previous = control:GetValue() -- Opening a page must not round or save its initial value.
         display()
     end
-    local wrapper, receiver = ui.inputRelay(row, control, 'ProgressBar')
+    local wrapper, unbindSlider = ui.sliderRelay(owner, row, control,
+        function() changed(false) end,
+        function() captured = true end,
+        function() captured = false; changed(true) end)
+    unbinds[#unbinds + 1] = unbindSlider
     ui.replaceInputControl(row, old, wrapper)
     row.Slider_SettingValue = control
     row:InitCachedTexts()
@@ -265,22 +277,11 @@ local function createSlider(owner, state, mod, row, value, changed, unbinds, def
     ui.setText(left, numbers.text(params.min))
     ui.setText(right, numbers.text(params.max))
     setValue(value)
-    unbinds[#unbinds + 1] = ui.onSignal(control, 'OnValueChanged', receiver,
-        '/Script/UMG.ProgressBar:SetPercent', function() changed(false) end)
-    for _, mode in ipairs({'Mouse', 'Controller'}) do
-        unbinds[#unbinds + 1] = ui.onSignal(control, 'On' .. mode .. 'CaptureBegin', receiver,
-            '/Script/UMG.Widget:ForceLayoutPrepass', function() captured = true end)
-        unbinds[#unbinds + 1] = ui.onSignal(control, 'On' .. mode .. 'CaptureEnd', receiver,
-            '/Script/UMG.Widget:InvalidateLayoutAndVolatility', function()
-                captured = false
-                changed(true)
-            end)
-    end
     return {control = control, initialRaw = value,
         setValue = setValue,
         setHighlighted = function(selected)
+            highlighted = selected
             control:SetForceHovered(selected)
-            row.CurrentValue:SetColorAndOpacity(selected and row.SelectedColor or row.DefaultColor)
             display()
         end,
         isEditing = function() return captured or control:HasMouseCapture() end,
@@ -306,7 +307,7 @@ function M.rowClass(definition)
     return definition.type:find('Slider$') and 'W_SettingsListEntry_Scalar_C' or 'W_SettingsListEntry_Discrete_C'
 end
 
-function M.create(owner, state, mod, row, value, changed, definition)
+function M.create(owner, state, mod, row, value, changed, definition, eventHost)
     definition = definition or {type = M.simpleType(value), params = {}}
     local create = assert(M.resolve(definition), 'Unsupported configuration control: ' .. tostring(definition.type))
     local unbinds = {}
@@ -322,7 +323,7 @@ function M.create(owner, state, mod, row, value, changed, definition)
         local success, err = pcall(changed, force)
         handling = false
         if not success then error(err, 0) end
-    end, unbinds, definition)
+    end, unbinds, definition, eventHost)
     if not ok then destroy(); error(editor, 0) end
     local setValue = editor.setValue
     editor.setValue = function(current)

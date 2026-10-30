@@ -17,6 +17,7 @@ local english = {
     save_failed = '{name} (save failed)',
     no_fields = 'No editable settings.',
     no_configs = 'No editable configurations found.',
+    loading_configs = 'Loading configurations...',
     discovery_failed = 'Cannot find configurations. See the UE4SS log.',
     config_read_failed = '{mod}: Cannot read configuration. See the UE4SS log.',
 }
@@ -45,9 +46,9 @@ local function language()
     return aliases[tag] or tag
 end
 
--- Called on page entry, never from a timer. Each page keeps its own translator.
-local function get()
-    local tag, values, chain = language(), {}, {}
+-- Called only by the background worker; never query UE objects here.
+local function load(tag)
+    local values, chain = {}, {}
     local parent = tag
     while parent do chain[#chain + 1] = parent; parent = parent:match('^(.*)%-[^-]+$') end
     for index = #chain, 1, -1 do
@@ -63,12 +64,27 @@ local function get()
             end
         end
     end
+    return values
+end
+
+local function translator(values)
     return function(key, args)
         local text = values[key] or english[key] or key
         return (text:gsub('{([%w_]+)}', function(name)
             return args and args[name] ~= nil and tostring(args[name]) or '{' .. name .. '}'
         end))
-    end, tag
+    end
 end
 
-return {get = get}
+local fallback, cached = translator({}), {}
+local function get()
+    local tag = language()
+    return cached[tag] or fallback, tag
+end
+
+local function apply(tag, values)
+    cached[tag] = translator(values)
+    return cached[tag]
+end
+
+return {get = get, load = load, apply = apply}

@@ -13,41 +13,23 @@ local assets = {
 }
 
 local function log(value) print(TAG .. tostring(value) .. '\n') end
+-- Avoid converting native SlateColor structs, whose internal fields may be unsafe in UE4SS.
+function M.textColor(selected)
+    local value = selected and 0 or 1
+    return {ColorUseRule = 0, SpecifiedColor = {R = value, G = value, B = value, A = 1}}
+end
 -- Windows CRT os.clock measures elapsed milliseconds, including blocking calls.
--- Aggregate nested work per operation; no timers, polling or per-widget log spam.
-local timing
+-- Only time UI operations that can cause a visible menu hitch.
 function M.timed(label, callback, ...)
-    local parent = timing
-    local frame = {started = os.clock(), children = 0, stats = parent and parent.stats or {}}
-    timing = frame
+    local started = os.clock()
     local result = table.pack(pcall(callback, ...))
-    local elapsed = (os.clock() - frame.started) * 1000
-    timing = parent
-    local stat = frame.stats[label] or {name = label, total = 0, own = 0, count = 0, peak = 0}
-    frame.stats[label] = stat
-    stat.total, stat.own = stat.total + elapsed, stat.own + math.max(0, elapsed - frame.children)
-    stat.count, stat.peak = stat.count + 1, math.max(stat.peak, elapsed)
-    if parent then
-        parent.children = parent.children + elapsed
-    elseif elapsed >= 5 then
-        local ranked, parts = {}, {}
-        for _, entry in pairs(frame.stats) do ranked[#ranked + 1] = entry end
-        table.sort(ranked, function(a, b) return a.own > b.own end)
-        for index = 1, math.min(6, #ranked) do
-            local entry = ranked[index]
-            parts[#parts + 1] = string.format('%s: own=%.1f total=%.1f max=%.1f ms n=%d',
-                entry.name, entry.own, entry.total, entry.peak, entry.count)
-        end
-        log(string.format('[Timing] %s %.1f ms%s | %s', label, elapsed,
-            result[1] and '' or ' FAILED', table.concat(parts, ' | ')))
+    local elapsed = (os.clock() - started) * 1000
+    if elapsed >= 5 then
+        log(string.format('[Timing] %s %.1f ms%s', label, elapsed, result[1] and '' or ' FAILED'))
     end
     if not result[1] then error(result[2], 0) end
     return table.unpack(result, 2, result.n)
 end
-local function measured(label, callback)
-    return function(...) return M.timed(label, callback, ...) end
-end
-
 local function attempt(label, callback, ...)
     local ok, result = pcall(callback, ...)
     if not ok then log(label .. ': ' .. tostring(result)) end
@@ -157,16 +139,31 @@ local function setText(widget, value)
     end
     return true
 end
-local function setFields(widget, fields, value)
-    local count = 0
-    for _, field in ipairs(fields) do
-        if setText(prop(widget, field), value) then count = count + 1 end
+function M.setTextColor(widget, selected)
+    if not valid(widget) then return end
+    local color = M.textColor(selected)
+    if isA(widget, '/Script/ProjectPBZ.PBZCommonLocText') then
+        -- Persist through the game's deferred language/decorator style refresh.
+        widget:OverrideTextColor(color)
+    else
+        widget:SetColorAndOpacity(color)
     end
-    return count
 end
-local function rowTitle(row, value)
-    assert(setFields(row, {'Text_SettingName', 'SettingName', 'LocText_SettingName'}, value) > 0,
-        'Game row has no supported title widget: ' .. fullName(row))
+local function rowTitle(row, value, labelOverride)
+    if valid(labelOverride) then
+        setText(labelOverride, value)
+        M.setTextColor(labelOverride, row:GetSelected())
+        return
+    end
+    local count = 0
+    for _, field in ipairs({'Text_SettingName', 'SettingName', 'LocText_SettingName'}) do
+        local label = prop(row, field)
+        if setText(label, value) then
+            M.setTextColor(label, row:GetSelected())
+            count = count + 1
+        end
+    end
+    assert(count > 0, 'Game row has no supported title widget: ' .. fullName(row))
 end
 
 local function inputTextStyleSource(row)
@@ -487,12 +484,7 @@ local function emphasizeHeading(row, scale)
             local font = label.Font
             font.Size = math.floor(font.Size * (scale or 1.6) + 0.5)
             label:SetFont(font)
-            local color = label.ColorAndOpacity
-            color.ColorUseRule = 0 -- UseColor_Specified
-            color.SpecifiedColor.R, color.SpecifiedColor.G = 1, 1
-            color.SpecifiedColor.B, color.SpecifiedColor.A = 1, 1
-            label:SetColorAndOpacity(color)
-            if prop(row, 'DefaultColor') ~= nil then row.DefaultColor = color end
+            M.setTextColor(label, false)
             label:SetRenderOpacity(1)
             label:SetIsEnabled(true)
             local parent = label:GetParent()
@@ -505,8 +497,9 @@ local function emphasizeHeading(row, scale)
     end
 end
 
-local hooks, clicks, options, enters, leaves, signals = {}, {}, {}, {}, {}, {}
-local inputHooks, activePages = {}, {}
+local hooks, controlEvents = {}, {}
+local signals = {MCU_TextCommitted = {}, MCU_TextChanged = {}, MCU_KeyCaptured = {}, MCU_MenuDestruct = {}}
+local activePages = {}
 
 local function unhook(path)
     local hook = hooks[path]
@@ -531,7 +524,9 @@ local function unhook(path)
 end
 
 -- Fixed PBZ functions only; native puerts overrides need the post-hook argument.
-function M.hook(path, callback)
+function M.hook(path, callback, recheck)
+    local cached = hooks[path]
+    if cached and cached.active and valid(cached.fn) and not recheck then return true end
     local fn = StaticFindObject(path)
     if not valid(fn) then return false end
     if hooks[path] and hooks[path].active and same(hooks[path].fn, fn) then return true end
@@ -550,26 +545,9 @@ function M.hook(path, callback)
     return true
 end
 
-function M.inputHook(path, callback)
-    if not valid(StaticFindObject(path)) then return false end
-    inputHooks[path] = callback
-    if next(activePages) then return M.hook(path, callback) end
-    return true
-end
-
 function M.setInputActive(state, active)
     if not active and state.cancelCapture then state.cancelCapture() end
     activePages[state] = active and true or nil
-    local enabled = next(activePages) ~= nil
-    local changed = 0
-    for path, callback in pairs(inputHooks) do
-        if enabled and (not hooks[path] or not hooks[path].active) then
-            if M.hook(path, callback) then changed = changed + 1 end
-        elseif not enabled and hooks[path] then
-            if unhook(path) then changed = changed + 1 end
-        end
-    end
-    if changed > 0 then log('Input hooks ' .. (enabled and 'enabled: ' or 'released: ') .. changed) end
 end
 
 local function dispatch(entries, object)
@@ -582,7 +560,6 @@ local function bind(entries, object, callback)
     entries[key] = entry
     return function() if entries[key] == entry then entries[key] = nil end end
 end
-function M.onClick(button, callback) return bind(clicks, button, callback) end
 local function inputWrapper(row, control)
     local wrapper = native(row.WidgetTree, 'Overlay', 'InputWrapper')
     local slot = wrapper:AddChildToOverlay(control)
@@ -592,7 +569,7 @@ local function inputWrapper(row, control)
 end
 
 -- The hidden blueprint child owns text delegate binding and stays alive with the row.
--- Only its dedicated function is hooked; inputHooks handles menu activation/cleanup.
+-- Dedicated custom events notify Lua without per-function hooks.
 function M.textInputRelay(owner, row, control, callback, preview)
     local package = '/Game/Mods/ModConfigUI/W_TextInputBridge'
     local classPath = package .. '.W_TextInputBridge_C'
@@ -609,18 +586,10 @@ function M.textInputRelay(owner, row, control, callback, preview)
     receiver:SetVisibility(1)
     local wrapper = inputWrapper(row, control)
     wrapper:AddChildToOverlay(receiver)
-    local path = classPath .. ':MCUTextCommitted'
-    local entries = signals[path]
-    if not entries then entries = {}; signals[path] = entries end
-    assert(M.inputHook(path, function(object) dispatch(entries, object) end), 'MCU text commit function unavailable')
-    local unbind = bind(entries, receiver, callback)
+    local unbind = bind(signals.MCU_TextCommitted, receiver, callback)
     local unbindPreview
     if preview then
-        local changedPath = classPath .. ':MCUTextChanged'
-        signals[changedPath] = signals[changedPath] or {}
-        local changedEntries = signals[changedPath]
-        assert(M.inputHook(changedPath, function(object) dispatch(changedEntries, object) end))
-        unbindPreview = bind(changedEntries, receiver, preview)
+        unbindPreview = bind(signals.MCU_TextChanged, receiver, preview)
     end
     local ok, err = pcall(function() receiver:BindInput(control) end)
     if not ok then unbind(); if unbindPreview then unbindPreview() end; receiver:RemoveFromParent(); error(err, 0) end
@@ -647,23 +616,16 @@ function M.captureKey(owner, state, callback, finished)
     assert(valid(class), 'Install the updated MCU Blueprint package and restart the game')
     local receiver = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary'):Create(owner, class, owner:GetOwningPlayer())
     receiver.TickFrequency = 0
-    local path = classPath .. ':MCUKeyCaptured'
-    signals[path] = signals[path] or {}
-    local entries = signals[path]
-    -- Capture owns this hook; it must be released while its receiver/class is
-    -- still alive, rather than retained in the menu-wide input hook catalogue.
-    assert(M.hook(path, function(object) dispatch(entries, object) end))
     local unbind, stopped
     local function stop()
         if stopped then return end
         stopped = true
         if state.cancelCapture == stop then state.cancelCapture = nil end
         if unbind then unbind() end
-        if not next(entries) then unhook(path) end
         if valid(receiver) then receiver:RemoveFromParent() end
         if finished then finished() end
     end
-    unbind = bind(entries, receiver, function()
+    unbind = bind(signals.MCU_KeyCaptured, receiver, function()
         local name = fname(receiver.CapturedKey.KeyName)
         if name == 'Escape' then stop()
         elseif callback(name) then stop() end
@@ -677,60 +639,96 @@ function M.captureKey(owner, state, callback, finished)
     return stop
 end
 
--- Slider delegates still use a collapsed native receiver until their migration.
-function M.inputRelay(row, control, className)
-    local wrapper = inputWrapper(row, control)
-    -- UE 5.7 uses UTF-8 soft subpaths; this UE4SS build copies them as UTF-16
-    -- when Add/Remove constructs a weak delegate reference. A package-level
-    -- receiver has an empty subpath, avoiding that incompatible string copy.
-    -- The panel slot holds it for GC; the transient package does not root it.
-    local package = StaticFindObject('/Engine/Transient')
-    assert(isA(package, '/Script/CoreUObject.Package'), 'Transient package unavailable')
-    local receiver = StaticConstructObject(StaticFindObject('/Script/UMG.' .. className),
-        package, FName('None'), 0x40) -- Let Unreal assign a unique object name.
-    assert(valid(receiver) and same(receiver:GetOuter(), package), 'Invalid input event receiver outer')
-    receiver:SetVisibility(1)
-    wrapper:AddChildToOverlay(receiver)
-    return wrapper, receiver
+-- Instance-bound Blueprint delegates and a row wrapper replace global input hooks.
+local function controlBridge(owner)
+    local package = '/Game/Mods/ModConfigUI/W_ControlEvents'
+    local class = StaticFindObject(package .. '.W_ControlEvents_C')
+    if not valid(class) then
+        class = StaticFindObject('/Script/AssetRegistry.Default__AssetRegistryHelpers'):GetAsset(
+            {PackageName = FName(package), AssetName = FName('W_ControlEvents_C')})
+    end
+    assert(valid(class), 'Install the updated MCU Blueprint package and restart the game')
+    local receiver = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary'):Create(owner, class, owner:GetOwningPlayer())
+    assert(valid(receiver), 'Could not create MCU control event bridge')
+    receiver.TickFrequency = 0
+    return receiver
 end
-function M.onSignal(control, event, receiver, path, callback)
-    local entries = signals[path]
-    if not entries then entries = {}; signals[path] = entries end
-    assert(M.inputHook(path, function(object) dispatch(entries, object) end), 'Input receiver unavailable: ' .. path)
-    local unbind = bind(entries, receiver, callback)
-    local name = FName(path:match(':([^:]+)$'))
-    local ok, err = pcall(function() control[event]:Add(receiver, name) end)
-    if not ok then unbind(); error(err, 0) end
+local function controlCallbacks(receiver, handlers)
+    local key, entry = address(receiver), {object = receiver, handlers = handlers}
+    controlEvents[key] = entry
+    return function() if controlEvents[key] == entry then controlEvents[key] = nil end end
+end
+function M.lifecycleRelay(owner, host, activated, deactivated, destroyed)
+    -- A collapsed child is retained by the settings tree across menu closes.
+    local root = owner.WidgetTree.RootWidget
+    assert(isA(root, '/Script/UMG.PanelWidget') and not isA(root, '/Script/UMG.ContentWidget'),
+        'Settings root cannot retain the lifecycle bridge')
+    local receiver = controlBridge(owner)
+    receiver.NotifyDestruct = true
+    receiver:SetVisibility(1)
+    root:AddChild(receiver)
+    local unbind = controlCallbacks(receiver, {HostActivated = activated, HostDeactivated = deactivated})
+    local unbindDestruct = bind(signals.MCU_MenuDestruct, receiver, destroyed)
+    local ok, err = pcall(function() receiver:BindHost(host) end)
+    if not ok then unbind(); unbindDestruct(); receiver:RemoveFromParent(); error(err, 0) end
     return function()
         unbind()
-        if valid(control) and valid(receiver) then control[event]:Remove(receiver, name) end
+        unbindDestruct() -- Removing the receiver may itself send Destruct.
+        if valid(receiver) then
+            if valid(host) then receiver:UnbindHost() end
+            receiver:RemoveFromParent()
+        end
     end
 end
-function M.onHighlight(row, callback, button)
-    local source = button or prop(row, 'Background') or row
-    if not button then
-        -- SelfHitTestInvisible only hits children, leaving the blank part of a row inert.
-        row:SetVisibility(0)
-        source:SetVisibility(0)
-        local path = row:GetClass():GetFullName():match('^[^ ]+ (.+)$')
-        M.inputHook(path .. ':OnMouseEnter', function(object) dispatch(enters, object) end)
-        M.inputHook(path .. ':OnMouseLeave', function(object) dispatch(leaves, object) end)
+function M.eventRow(owner, content)
+    local receiver = controlBridge(owner)
+    receiver:SetVisibility(0) -- The whole row receives hover; children retain input.
+    local slot = receiver.ContentRoot:AddChildToOverlay(content)
+    slot:SetHorizontalAlignment(0)
+    slot:SetVerticalAlignment(0)
+    return receiver
+end
+function M.onClick(host, button, callback)
+    local receiver = controlBridge(host)
+    receiver:SetVisibility(1)
+    host.ContentRoot:AddChildToOverlay(receiver)
+    local unbind = controlCallbacks(receiver, {Clicked = callback})
+    local ok, err = pcall(function() receiver:BindButton(button) end)
+    if not ok then unbind(); receiver:RemoveFromParent(); error(err, 0) end
+    return function()
+        unbind()
+        if valid(receiver) then
+            if valid(button) then receiver:UnbindButton() end
+            receiver:RemoveFromParent()
+        end
     end
-    local prefix = button and '/Script/CommonUI.CommonButtonBase:'
-        or '/Game/PBZContent/UI/Settings/Editors/W_SettingEntryBackground.W_SettingEntryBackground_C:'
-    M.inputHook(prefix .. (button and 'BP_OnHovered' or 'OnMouseEnter'), function(object) dispatch(enters, object) end)
-    M.inputHook(prefix .. (button and 'BP_OnUnhovered' or 'OnMouseLeave'), function(object) dispatch(leaves, object) end)
-    M.inputHook('/Script/UMG.UserWidget:OnAddedToFocusPath', function(object) dispatch(enters, object) end)
-    M.inputHook('/Script/UMG.UserWidget:OnRemovedFromFocusPath', function(object) dispatch(leaves, object) end)
-    local bindings = {
-        bind(enters, source, function() callback(true) end),
-        bind(leaves, source, function() callback(false) end),
-    }
-    if not same(source, row) then
-        bindings[#bindings + 1] = bind(enters, row, function() callback(true) end)
-        bindings[#bindings + 1] = bind(leaves, row, function() callback(false) end)
+end
+function M.sliderRelay(owner, row, control, changed, captureBegin, captureEnd)
+    local wrapper = inputWrapper(row, control)
+    local receiver = controlBridge(owner)
+    receiver:SetVisibility(1)
+    wrapper:AddChildToOverlay(receiver)
+    local unbind = controlCallbacks(receiver, {
+        SliderChanged = changed, CaptureBegin = captureBegin, CaptureEnd = captureEnd,
+    })
+    local ok, err = pcall(function() receiver:BindSlider(control) end)
+    if not ok then unbind(); receiver:RemoveFromParent(); error(err, 0) end
+    return wrapper, function()
+        unbind()
+        if valid(receiver) then
+            if valid(control) then receiver:UnbindSlider() end
+            receiver:RemoveFromParent()
+        end
     end
-    return function() for _, unbind in ipairs(bindings) do unbind() end end
+end
+function M.onHighlight(host, callback)
+    local hovered, focused = false, false
+    return controlCallbacks(host, {
+        OnMouseEnter = function() hovered = true; callback(true) end,
+        OnMouseLeave = function() hovered = false; callback(focused) end,
+        OnAddedToFocusPath = function() focused = true; callback(true) end,
+        OnRemovedFromFocusPath = function() focused = false; callback(hovered) end,
+    })
 end
 
 -- PBZ navigation requires BOTH the ID and a visible descriptor, then selects the
@@ -771,14 +769,36 @@ function M.navigationTab(tabs, include)
     end
     tabs:ResetTabSwitchTracking()
 end
-function M.onOptionSelected(object, callback)
-    assert(M.inputHook('/Game/PBZContent/UI/Settings/Editors/W_SettingBaseRotator.W_SettingBaseRotator_C:BP_OnOptionSelected',
-        function(rotator) dispatch(options, rotator) end), 'PBZ rotator event unavailable')
-    return bind(options, object, callback)
-end
+local controlEventsStarted = false
 function M.startInputEvents()
-    assert(M.inputHook('/Script/CommonUI.CommonButtonBase:HandleButtonClicked',
-        function(object) dispatch(clicks, object) end), 'Button click event unavailable')
+    if controlEventsStarted then return end
+    controlEventsStarted = true
+    for name, entries in pairs(signals) do
+        RegisterCustomEvent(name, function(context)
+            if name == 'MCU_MenuDestruct' or next(activePages) then dispatch(entries, unwrap(context)) end
+        end)
+    end
+    RegisterCustomEvent('MCU_ControlEvent', function(context)
+        local receiver = unwrap(context)
+        if not valid(receiver) then return end
+        local entry = controlEvents[address(receiver)]
+        if not entry or not same(entry.object, receiver) then return end
+        local kind = fname(receiver.EventKind)
+        if kind ~= 'HostActivated' and kind ~= 'HostDeactivated' and not next(activePages) then return end
+        local callback = entry.handlers[kind]
+        if not callback then return end
+        if kind == 'Clicked' then
+            -- Expanding a group may synchronously load assets. Leave the Blueprint
+            -- event/UE4SS callback before doing that work to avoid a loader wait.
+            ExecuteInGameThreadWithDelay(0, function()
+                if next(activePages) and valid(receiver) and controlEvents[address(receiver)] == entry then
+                    attempt('Control event failed', callback)
+                end
+            end)
+        else
+            attempt('Control event failed', callback)
+        end
+    end)
 end
 
 function M.menu(page)
@@ -984,25 +1004,26 @@ function M.menu(page)
 
 
     return {observeLayout = observeLayout,
-        tryInitialize = measured('menu.initialize', tryInitialize),
-        refreshTabButton = measured('menu.tabStyle', refreshTabButton),
-        updateSelection = measured('menu.selection', updateSelection), dispose = dispose}
+        tryInitialize = tryInitialize, refreshTabButton = refreshTabButton,
+        updateSelection = updateSelection, dispose = dispose}
 end
-
-gameClass = measured('assets.resolveClass', gameClass)
-createGameWidget = measured('widgets.createGameWidget', createGameWidget)
-native = measured('widgets.constructNative', native)
-mountPage = measured('layout.mountPage', mountPage)
-setNativeResetHidden = measured('menu.resetAction', setNativeResetHidden)
-M.setInputActive = measured('hooks.activateOrRelease', M.setInputActive)
-local originalHook = M.hook
-M.hook = function(path, callback) return M.timed('hook:' .. path, originalHook, path, callback) end
 
 M.valid, M.same, M.address, M.prop, M.isA = valid, same, address, prop, isA
 M.fname, M.log, M.attempt = fname, log, attempt
 M.native, M.createGameWidget = native, createGameWidget
 M.rowTitle, M.inputTextStyleSource = rowTitle, inputTextStyleSource
 M.setText = setText
+-- Apply asynchronously loaded labels without re-entering selection/refresh logic.
+function M.refreshLanguage(state)
+    if valid(state.tabs) then
+        local button = state.tabs:GetTabButtonBaseByID(FName(TAB_ID))
+        setText(prop(button, 'Text'), state.t('mod_tab'))
+    end
+    if state.active then
+        state.ownedTitle = state.t('mod_settings')
+        setText(prop(prop(state.owner, 'W_SecondTabLine'), 'LineText'), state.ownedTitle)
+    end
+end
 M.replaceInputControl, M.hideArrows, M.addRow = replaceInputControl, hideArrows, addRow
 M.emphasizeHeading, M.mountPage = emphasizeHeading, mountPage
 return M

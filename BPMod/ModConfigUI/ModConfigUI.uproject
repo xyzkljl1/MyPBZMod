@@ -1,6 +1,7 @@
 {
     "FileVersion": 3,
     "EngineAssociation": "5.7",
+    "Plugins": [{"Name": "CommonUI", "Enabled": true}],
     "Modules": [
         {
             "Name": "MCUBlueprintEditor",

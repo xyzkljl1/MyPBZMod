@@ -14,6 +14,7 @@
 local json = require("json")
 local configIO = require("mcu_core.config_io")
 local UEHelpers = require("UEHelpers")
+local background = require('background')
 local M = {}
 local source = debug.getinfo(1, "S").source:gsub("\\", "/")
 local modsDirectory = assert(source:match("^@(.+)/ModConfigUI/Scripts/[^/]+$"),
@@ -83,7 +84,9 @@ end
 -- Only enumerate direct sibling mod directories. PBZ does not use UE4SS's
 -- standard Binaries/Win64 layout, so avoid IterateGameDirectories here.
 -- dir excludes reparse-point directories; no recursive scan or temporary files.
-function M.discover(schemaIds)
+local directoryNames
+local function directories()
+    if directoryNames then return directoryNames end
     if modsDirectory:find('["%%!\r\n]') then
         return nil, "Mods directory contains characters unsupported by directory discovery"
     end
@@ -96,25 +99,63 @@ function M.discover(schemaIds)
     local listed, listError = pcall(function()
         for name in pipe:lines() do
             name = name:gsub("\r$", "")
-            if validModName(name) and not (schemaIds or {})[name:lower()] then names[#names + 1] = name end
+            if validModName(name) then names[#names + 1] = name end
         end
     end)
     local closed = pipe:close()
     if not listed then return nil, "Cannot enumerate mods: " .. tostring(listError) end
     if not closed then return nil, "Mod directory enumeration failed" end
     table.sort(names)
+    directoryNames = names
+    return names
+end
+
+-- Background reads must not recover/rename .new files while a mod is saving.
+local function readOnly(modName)
+    local path, err = configPath(modName)
+    if not path then return nil, err end
+    local file, reason, code = io.open(path, 'rb')
+    if not file and code == 2 then file, reason, code = io.open(path .. '.new', 'rb') end
+    if not file then return nil, code ~= 2 and reason or nil end
+    local text, readError = file:read('*a')
+    file:close()
+    if not text then return nil, readError end
+    text = text:gsub('^\239\187\191', '')
+    local values, position, decodeError = json.decode(text, 1, json.null)
+    if decodeError or not position or text:sub(position):find('%S') then
+        return nil, decodeError or 'Invalid JSON'
+    end
+    if type(values) ~= 'table' or values == json.null or (getmetatable(values) or {}).__jsontype == 'array' then
+        return nil, 'Simple configuration must be a JSON object'
+    end
+    local fields = {}
+    for key, value in pairs(values) do
+        if type(key) == 'string' and utf8.len(key) and editable(value) then fields[key] = value end
+    end
+    return fields
+end
+
+local function discover(schemaIds)
+    local names, reason = directories()
+    if not names then return nil, reason end
     local configs, issues = {}, {}
     for _, name in ipairs(names) do
-        local values, err = readCurrent(name)
-        if values then
-            local fields = {}
-            for key, value in pairs(values) do
-                if utf8.len(key) and editable(value) then fields[key] = value end
-            end
-            configs[#configs + 1] = {name = name, values = fields}
-        elseif err then issues[#issues + 1] = {name = name, error = err} end
+        if not schemaIds[name:lower()] then
+            local values, err = readOnly(name)
+            if values then
+                configs[#configs + 1] = {name = name, values = values}
+            elseif err then issues[#issues + 1] = {name = name, error = err} end
+        end
     end
     return configs, issues
+end
+
+function M.discover(schemaIds, complete, current)
+    background.run('simple.discover', function() return discover(schemaIds) end, complete, current)
+end
+
+function M.readAsync(modName, complete, current)
+    background.run('simple.read:' .. modName, function() return readOnly(modName) end, complete, current)
 end
 
 local function save(modName, changes, replace, expected)

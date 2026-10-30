@@ -3,6 +3,7 @@
 editor-build: compile the editor module and install it beside ModConfigUI.uproject.
 cook/iostore/pak/verify/publish: build existing Content assets; never regenerate them.
 create --overwrite-assets: explicitly discard manual edits and regenerate the bridge.
+create-controls --overwrite-assets: generate only the internal W_ControlEvents asset.
 Use UE_ROOT to override E:/UE_5.7. A supported C++ toolchain is required.
 """
 import argparse
@@ -51,16 +52,16 @@ def check_frozen_sdk():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("editor-build", "create", "create-api", "update-api", "version-api", "cook", "iostore", "pak", "verify", "publish"))
+    parser.add_argument("stage", choices=("editor-build", "create", "create-controls", "create-api", "update-api", "version-api", "cook", "iostore", "pak", "verify", "publish"))
     parser.add_argument("--overwrite-assets", action="store_true",
                         help="allow create to overwrite the source Blueprint and discard manual edits")
     options = parser.parse_args()
     stage = options.stage
-    if stage in ("create", "create-api", "update-api", "version-api") and not options.overwrite_assets:
+    if stage in ("create", "create-controls", "create-api", "update-api", "version-api") and not options.overwrite_assets:
         parser.error("Regeneration discards manual edits to the requested assets; explicitly pass --overwrite-assets")
-    if options.overwrite_assets and stage not in ("create", "create-api", "update-api", "version-api"):
-        parser.error("--overwrite-assets is only valid with create, create-api, update-api or version-api")
-    if stage in ("create", "create-api", "update-api", "version-api"):
+    if options.overwrite_assets and stage not in ("create", "create-controls", "create-api", "update-api", "version-api"):
+        parser.error("--overwrite-assets is only valid with an asset generation stage")
+    if stage in ("create", "create-controls", "create-api", "update-api", "version-api"):
         print("WARNING: Regeneration will overwrite the source Blueprint, including manual edits.", flush=True)
     check_frozen_sdk()
     if stage == "create-api" and frozen_manifest.is_file():
@@ -74,22 +75,22 @@ def main():
     if stage != "editor-build":
         # Pruning is confined to the command-line build copy, never the source project.
         descriptor["DisableEnginePluginsByDefault"] = True
-        descriptor.pop("Plugins", None)
+        descriptor["Plugins"] = [{"Name": "CommonUI", "Enabled": True}]
     (work / f"{mod_name}.uproject").write_text(json.dumps(descriptor, indent=4) + "\n", encoding="utf-8")
     if (source / "Config").is_dir():
         shutil.copytree(source / "Config", work / "Config", dirs_exist_ok=True)
-    if stage in ("cook", "create", "create-api", "update-api", "version-api"):
+    if stage in ("cook", "create", "create-controls", "create-api", "update-api", "version-api"):
         binaries = source / "Binaries/Win64"
         if not (binaries / f"UnrealEditor-{module_name}.dll").is_file():
             raise RuntimeError("Run editor-build first to compile the source project's editor module")
         shutil.copytree(binaries, work / "Binaries/Win64", dirs_exist_ok=True)
-    if stage in ("cook", "create", "create-api", "update-api", "version-api") and (source / "Content").is_dir():
+    if stage in ("cook", "create", "create-controls", "create-api", "update-api", "version-api") and (source / "Content").is_dir():
         # The committed, editable assets are the input, including any saved manual edits.
         shutil.copytree(source / "Content", work / "Content", dirs_exist_ok=True)
-    if stage in ("create", "create-api"):
+    if stage in ("create", "create-controls", "create-api"):
         # Regenerate only the requested assets in the build copy. An existing
         # on-disk package otherwise makes SavePackage reject a newly created object.
-        names = (["Blueprint/BP_MCUConfigComponent"]
+        names = (["W_ControlEvents"] if stage == "create-controls" else ["Blueprint/BP_MCUConfigComponent"]
                  if stage == "create-api" else [asset_name, "W_KeyCapture"] if mod_name == "ModConfigUI"
                  else ["ST_ExampleConfig", "ModActor"])
         for name in names:
@@ -145,8 +146,8 @@ DataPath={(work / 'Zen').as_posix()}
                 f"{mod_name}Editor", "Win64", "Development", f"-Project={uproject}",
                 "-WaitMutex", "-NoHotReloadFromIDE", "-NoEngineChanges", "-NoUBA", "-NoUBALocal", "-NoXGE", "-NoFASTBuild",
                 f"-Log={work / 'Logs/editor-build-ubt.log'}"]
-    elif stage in ("create", "create-api", "update-api", "version-api"):
-        commandlet = create_commandlet if stage == "create" else "MCUBlueprintAPIBuild"
+    elif stage in ("create", "create-controls", "create-api", "update-api", "version-api"):
+        commandlet = "MCUControlEventsBuild" if stage == "create-controls" else create_commandlet if stage == "create" else "MCUBlueprintAPIBuild"
         args = [editor, uproject, f"-run={commandlet}", "-OverwriteGeneratedAssets"] + common
         if stage == "update-api":
             args.append("-UpdateLifecycleOnly")
@@ -202,7 +203,7 @@ DataPath={(work / 'Zen').as_posix()}
         # Build caches remain in _temp; only persistent editor binaries go beside the source project.
         shutil.copytree(work / "Binaries/Win64", source / "Binaries/Win64", dirs_exist_ok=True, copy_function=copy_changed)
         print(f"Editor module ready. Open: {source / f'{mod_name}.uproject'}")
-    elif result.returncode == 0 and stage in ("create", "create-api", "update-api", "version-api"):
+    elif result.returncode == 0 and stage in ("create", "create-controls", "create-api", "update-api", "version-api"):
         if stage == "version-api":
             folder = Path("Content/Mods/ModConfigUI/Blueprint")
             for name in ("ST_MCUOptionV1", "ST_MCUFieldV1", "BP_MCUConfigComponent"):
@@ -210,6 +211,9 @@ DataPath={(work / 'Zen').as_posix()}
             for name in ("ST_MCUOption", "ST_MCUField"):
                 for base in (source, work):
                     (base / folder / (name + ".uasset")).unlink(missing_ok=True)
+        elif stage == "create-controls":
+            relative = "Content/Mods/ModConfigUI/W_ControlEvents.uasset"
+            shutil.copy2(work / relative, source / relative)
         elif stage == "update-api":
             relative = "Content/Mods/ModConfigUI/Blueprint/BP_MCUConfigComponent.uasset"
             shutil.copy2(work / relative, source / relative)
