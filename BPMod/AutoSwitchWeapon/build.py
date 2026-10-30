@@ -109,6 +109,7 @@ DataPath={(work / 'Zen').as_posix()}
                 f"-ScriptObjects={(metadata / 'scriptobjects.bin').as_posix()}",
                 f"-Commands={commands.as_posix()}", "-TargetPlatform=Windows"] + common
     elif stage == "pak":
+        (work / "IoStore/AutoSwitchWeapon.pak").unlink(missing_ok=True)
         response = work / "pak-files.txt"
         response.write_text("", encoding="utf-8")
         args = [pak, str(work / "IoStore/AutoSwitchWeapon.pak"), f"-Create={response.as_posix()}"] + common
@@ -123,7 +124,11 @@ DataPath={(work / 'Zen').as_posix()}
             if not artifact.is_file() or artifact.stat().st_size == 0:
                 raise RuntimeError(f"Missing container: {artifact}")
             shutil.copy2(artifact, destination / artifact.name)
-        print("Published only AutoSwitchWeapon.pak/.utoc/.ucas; global containers and authoring DLLs excluded.")
+        # A formal installed manifest ensures the config directory exists without Lua or a bundled user config.
+        metadata_directory = project / "AutoSwitchWeapon/platform/steam/ue4ss/Mods/AutoSwitchWeapon"
+        metadata_directory.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(project / "AutoSwitchWeapon/modinfo.ini", metadata_directory / "modinfo.ini")
+        print("Published containers and installed mod metadata; user config and authoring DLLs excluded.")
         return 0
     else:
         raise ValueError("Stage: editor-build, create, cook, iostore, pak, verify, publish")

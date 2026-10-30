@@ -7,7 +7,8 @@ public class AutoSwitchWeaponEditor : ModuleRules
         PrivateDependencyModuleNames.AddRange(new[] {
             "Core", "CoreUObject", "Engine", "UnrealEd", "BlueprintGraph", "KismetCompiler",
             "GameplayAbilities", "GameplayTags", "GameplayTasks", "EnhancedInput", "InputCore",
-            "CharacterBasics", "SGameCombatSystem", "SGameActorState"
+            "CharacterBasics", "SGameCombatSystem", "SGameActorState", "ProjectPBZ",
+            "UMG", "CommonUI", "Json", "JsonUtilities", "JsonBlueprintUtilities"
         });
     }
 }

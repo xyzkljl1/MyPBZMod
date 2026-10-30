@@ -1,5 +1,15 @@
 #include "AutoSwitchWeaponBuildCommandlet.h"
 #include "Modules/ModuleManager.h"
+#include "PBZBlueprintFunctionLibrary.h"
+#include "CommonActivatableWidget.h"
+#include "CommonUserWidget.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Kismet/BlueprintPathsLibrary.h"
+#include "Kismet/KismetStringLibrary.h"
+#include "JsonBlueprintFunctionLibrary.h"
+#include "K2Node_MakeStruct.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "BasicAttributeSet.h"
 #include "CharacterWeaponsComponent.h"
 #include "ActorStateComponent.h"
@@ -15,6 +25,8 @@
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/BlueprintMapLibrary.h"
+#include "Kismet/KismetArrayLibrary.h"
+#include "Blueprint/WidgetTree.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
@@ -26,6 +38,7 @@
 #include "GameplayTagsManager.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CallArrayFunction.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_VariableGet.h"
@@ -101,7 +114,8 @@ struct Graph
     UK2Node_CallFunction* Call(UClass* C, FName Name, Pin Target = nullptr)
     {
         auto* F = C->FindFunctionByName(Name); checkf(F, TEXT("Missing function %s:%s"), *C->GetName(), *Name.ToString());
-        auto* N = Node<UK2Node_CallFunction>(G);
+        UK2Node_CallFunction* N = C == UKismetArrayLibrary::StaticClass()
+            ? static_cast<UK2Node_CallFunction*>(Node<UK2Node_CallArrayFunction>(G)) : Node<UK2Node_CallFunction>(G);
         N->SetFromFunction(F); N->AllocateDefaultPins();
         if (Target) Link(Target, N->FindPinChecked(Schema::PN_Self));
         return N;
@@ -205,6 +219,15 @@ struct Graph
 
 void BuildGraphs(UBlueprint* BP)
 {
+    Var(BP, "ProtectShachiAttacks", Type(Schema::PC_Boolean), "true");
+    Var(BP, "ConfigPath", Type(Schema::PC_String));
+    Var(BP, "ConfigJson", StructType(FJsonObjectWrapper::StaticStruct()));
+    Var(BP, "PendingThreshold", Type(Schema::PC_Real, nullptr, Schema::PC_Double));
+    Var(BP, "PendingProtection", Type(Schema::PC_Boolean));
+    Var(BP, "SettingsPanel", ObjectType(UUserWidget::StaticClass()));
+    auto Menus = ObjectType(UCommonActivatableWidget::StaticClass()); Menus.ContainerType = EPinContainerType::Array;
+    Var(BP, "SettingsMenus", Menus);
+    Var(BP, "ConfigReloadCount", Type(Schema::PC_Int));
     Var(BP, "Enabled", Type(Schema::PC_Boolean), "true");
     Var(BP, "ThresholdPercent", Type(Schema::PC_Real, nullptr, Schema::PC_Double), "30.0");
     for (auto Name : {"Ready", "Queued", "InputInFlight", "Started", "ResolveQueued"}) Var(BP, Name, Type(Schema::PC_Boolean));
@@ -239,10 +262,19 @@ void BuildGraphs(UBlueprint* BP)
     TMap<FName, UK2Node_FunctionEntry*> Functions;
     for (auto Name : {"Initialize", "Shutdown", "StopWatcher", "UnbindState", "QueueEvaluate", "Evaluate", "FinishInput",
         "PostBeginPlay", "PreBeginPlay", "StopMod", "UnbindGameInstance", "UnbindPawn", "QueueResolve", "ResolvePlayer",
+        "SetupConfig", "ReloadConfig", "ApplyConfig", "BindMenus", "UnbindMenus", "FindSettings", "TryBindSettings", "TryBindActiveSettings", "UnbindSettings", "SettingsClosed", "LayerChanged", "BindMenuChain", "BindSettingMenu", "UnbindSettingMenu",
         "CapturePaidAttacks", "CaptureAttackTag", "PruneProtection", "RemoveEndedAttack", "AddAttackWatcher", "StopAttackWatchers"})
         Functions.Add(Name, Function(BP, Name));
     for (auto Name : {"CaptureAttackTag", "AddAttackWatcher", "RemoveEndedAttack"})
         Functions[Name]->CreateUserDefinedPin("Tag", StructType(FGameplayTag::StaticStruct()), EGPD_Output);
+    Functions["BindMenuChain"]->CreateUserDefinedPin("Object", ObjectType(UObject::StaticClass()), EGPD_Output);
+    for (auto Name : {"BindSettingMenu", "UnbindSettingMenu"})
+        Functions[Name]->CreateUserDefinedPin("Widget", ObjectType(UCommonActivatableWidget::StaticClass()), EGPD_Output);
+    Functions["TryBindSettings"]->CreateUserDefinedPin("Widget", ObjectType(UUserWidget::StaticClass()), EGPD_Output);
+    Functions["TryBindActiveSettings"]->CreateUserDefinedPin("Widget", ObjectType(UUserWidget::StaticClass()), EGPD_Output);
+    Functions["TryBindActiveSettings"]->CreateUserDefinedPin("Object", ObjectType(UObject::StaticClass()), EGPD_Output);
+    // The game's BindLayerDisplayedWidgetChanged helper rejects callbacks with any parameters.
+    // LayerChanged intentionally has no pins, unlike the underlying layout multicast event.
     auto* Initialize = Functions["Initialize"];
     for (auto Pair : {TPair<FName, UClass*>("Pawn", APawn::StaticClass()), {"PlayerController", APlayerController::StaticClass()},
         {"WeaponComponent", UCharacterWeaponsComponent::StaticClass()}, {"StateComponent", UActorStateComponent::StaticClass()},
@@ -306,7 +338,7 @@ void BuildGraphs(UBlueprint* BP)
     {
         // Record costs even above the switching threshold; a later cost or maximum
         // change can take this same attack below it before the attack has finished.
-        Graph G(Functions["RecordResourceCost"]);
+        Graph G(Functions["RecordResourceCost"]); G.Guard(G.Get("ProtectShachiAttacks"));
         auto* IsShachi = G.Call(UAbilitySystemBlueprintLibrary::StaticClass(), "EqualEqual_GameplayAttributeGameplayAttribute");
         Link(G.Entry->FindPinChecked(FName("Attribute")), IsShachi->FindPinChecked(FName("AttributeA")));
         Link(G.Get("ShachiAttribute"), IsShachi->FindPinChecked(FName("AttributeB"))); G.Guard(IsShachi->GetReturnValuePin());
@@ -449,7 +481,7 @@ void BuildGraphs(UBlueprint* BP)
     {
         Graph G(Functions["StopMod"]); G.Set("Started", nullptr, "false"); G.ClearTimer("ResolvePlayer");
         G.Set("ResolveQueued", nullptr, "false"); G.Run(G.Local("Shutdown"));
-        G.Run(G.Local("UnbindPawn")); G.Run(G.Local("UnbindGameInstance"));
+        G.Run(G.Local("UnbindPawn")); G.Run(G.Local("UnbindGameInstance")); G.Run(G.Local("UnbindMenus"));
     }
     {
         Graph G(Functions["PostBeginPlay"]); G.Guard(G.Get("Started"), false);
@@ -462,7 +494,7 @@ void BuildGraphs(UBlueprint* BP)
         G.Exec = Unique->GetThenPin();
         auto* Instance = G.Call(UGameplayStatics::StaticClass(), "GetGameInstance"); Link(G.Self(), Instance->FindPinChecked(FName("WorldContextObject")));
         G.Set("BootstrapGameInstance", Instance->GetReturnValuePin()); G.Guard(G.Valid(G.Get("BootstrapGameInstance")));
-        G.Set("Started", nullptr, "true");
+        G.Set("Started", nullptr, "true"); G.Run(G.Local("SetupConfig"));
         G.Delegate(UGameInstance::StaticClass(), "OnPawnControllerChangedDelegates", G.Get("BootstrapGameInstance"), "PawnControllerChanged", true);
         G.Run(G.Local("QueueResolve"));
     }
@@ -484,6 +516,7 @@ void BuildGraphs(UBlueprint* BP)
     }
     {
         Graph G(Functions["ResolvePlayer"]); G.Set("ResolveQueued", nullptr, "false"); G.Guard(G.Get("Started"));
+        G.Run(G.Local("BindMenus"));
         G.Set("ResolveCount", G.Math("Add_IntInt", G.Get("ResolveCount"), nullptr, "1"));
         G.Run(G.Local("Shutdown")); G.Run(G.Local("UnbindPawn"));
         auto* PC = G.Call(UGameplayStatics::StaticClass(), "GetPlayerController"); Link(G.Self(), PC->FindPinChecked(FName("WorldContextObject")));
@@ -516,6 +549,140 @@ void BuildGraphs(UBlueprint* BP)
         Link(Weapons, Init->FindPinChecked(FName("WeaponComponent"))); Link(States, Init->FindPinChecked(FName("StateComponent")));
         Link(Input, Init->FindPinChecked(FName("Subsystem"))); Link(Action, Init->FindPinChecked(FName("Action"))); G.Run(Init);
     }
+
+    auto FilePin = [](Graph& G) {
+        auto* N = Node<UK2Node_MakeStruct>(G.G); N->StructType = FFilePath::StaticStruct(); N->AllocateDefaultPins();
+        Link(G.Get("ConfigPath"), N->FindPinChecked(FName("FilePath"), EGPD_Input));
+        return N->FindPinChecked(FName("FilePath"), EGPD_Output);
+    };
+    {
+        Graph G(Functions["SetupConfig"]);
+        auto* Empty = G.Call(UKismetStringLibrary::StaticClass(), "IsEmpty"); Link(G.Get("ConfigPath"), Empty->FindPinChecked(FName("InString"))); G.Guard(Empty->GetReturnValuePin());
+        auto* Directory = G.Call(UBlueprintPathsLibrary::StaticClass(), "ProjectDir");
+        auto* Path = G.Call(UKismetStringLibrary::StaticClass(), "Concat_StrStr");
+        Link(Directory->GetReturnValuePin(), Path->FindPinChecked(FName("A")));
+        Value(Path->FindPinChecked(FName("B")), "../platform/steam/ue4ss/Mods/AutoSwitchWeapon/AutoSwitchWeapon.config.json");
+        G.Set("ConfigPath", Path->GetReturnValuePin()); G.Run(G.Local("ReloadConfig"));
+    }
+    {
+        Graph G(Functions["ReloadConfig"]);
+        G.Set("ConfigReloadCount", G.Math("Add_IntInt", G.Get("ConfigReloadCount"), nullptr, "1"));
+        auto* Exists = G.Call(UBlueprintPathsLibrary::StaticClass(), "FileExists");
+        Link(G.Get("ConfigPath"), Exists->FindPinChecked(FName("InPath")));
+        auto* Branch = G.Branch(Exists->GetReturnValuePin());
+        auto* Load = G.Call(UJsonBlueprintFunctionLibrary::StaticClass(), "FromFile");
+        Link(FilePin(G), Load->FindPinChecked(FName("File"))); G.Run(Load); G.Guard(Load->GetReturnValuePin());
+        G.Set("ConfigJson", Load->FindPinChecked(FName("OutJsonObject"))); G.Run(G.Local("ApplyConfig"));
+        G.Exec = Branch->GetElsePin();
+        auto* Defaults = G.Call(UJsonBlueprintFunctionLibrary::StaticClass(), "FromString");
+        Value(Defaults->FindPinChecked(FName("JsonString")), "{\"ThresholdPercent\":30,\"ProtectShachiAttacks\":true}"); G.Run(Defaults);
+        G.Set("ConfigJson", Defaults->FindPinChecked(FName("OutJsonObject")));
+        auto* Save = G.Call(UJsonBlueprintFunctionLibrary::StaticClass(), "ToFile");
+        Link(G.Get("ConfigJson"), Save->FindPinChecked(FName("JsonObject"))); Link(FilePin(G), Save->FindPinChecked(FName("File"))); G.Run(Save);
+        G.Run(G.Local("ApplyConfig"));
+    }
+    {
+        Graph G(Functions["ApplyConfig"]);
+        for (auto Pair : {TPair<FName, FName>("ThresholdPercent", "PendingThreshold"), {"ProtectShachiAttacks", "PendingProtection"}})
+        {
+            auto* Get = G.Call(UJsonBlueprintFunctionLibrary::StaticClass(), "GetField");
+            Link(G.Get("ConfigJson"), Get->FindPinChecked(FName("JsonObject"))); Value(Get->FindPinChecked(FName("FieldName")), Pair.Key.ToString());
+            G.Run(Get); G.Set(Pair.Value, Get->FindPinChecked(FName("OutValue"))); G.Guard(Get->GetReturnValuePin());
+        }
+        auto* Clamp = G.Call(UKismetMathLibrary::StaticClass(), "FClamp");
+        Link(G.Get("PendingThreshold"), Clamp->FindPinChecked(FName("Value")));
+        Value(Clamp->FindPinChecked(FName("Min")), "0"); Value(Clamp->FindPinChecked(FName("Max")), "100");
+        G.Set("PendingThreshold", Clamp->GetReturnValuePin());
+        G.Guard(G.Math("BooleanOR", G.Math("NotEqual_DoubleDouble", G.Get("PendingThreshold"), G.Get("ThresholdPercent")),
+            G.Math("NotEqual_BoolBool", G.Get("PendingProtection"), G.Get("ProtectShachiAttacks"))));
+        G.Set("ThresholdPercent", G.Get("PendingThreshold")); G.Set("ProtectShachiAttacks", G.Get("PendingProtection"));
+        // Clear already-paid attacks when protection is disabled; future costs are ignored.
+        auto* Protection = G.Branch(G.Get("ProtectShachiAttacks")); G.Exec = Protection->GetElsePin();
+        G.Run(G.Local("StopAttackWatchers")); G.Set("ProtectedAttacks"); G.Run(G.Local("QueueEvaluate"));
+        G.Exec = Protection->GetThenPin(); G.Run(G.Local("QueueEvaluate"));
+    }
+    {
+        Graph G(Functions["UnbindSettings"]);
+        G.ForEach(G.Get("SettingsMenus"), "UnbindSettingMenu", "Widget");
+        auto* Clear = G.Call(UKismetArrayLibrary::StaticClass(), "Array_Clear");
+        Link(G.Get("SettingsMenus"), Clear->FindPinChecked(FName("TargetArray"))); G.Run(Clear);
+        G.Set("SettingsPanel");
+    }
+    {
+        Graph G(Functions["TryBindSettings"]); auto Widget = G.Entry->FindPinChecked(FName("Widget"));
+        auto* Class = G.Call(UGameplayStatics::StaticClass(), "GetObjectClass"); Link(Widget, Class->FindPinChecked(FName("Object")));
+        auto* Reference = G.Call(UKismetSystemLibrary::StaticClass(), "Conv_ClassToSoftClassReference"); Link(Class->GetReturnValuePin(), Reference->FindPinChecked(FName("Class")));
+        auto* Name = G.Call(UKismetSystemLibrary::StaticClass(), "Conv_SoftClassReferenceToString"); Link(Reference->GetReturnValuePin(), Name->FindPinChecked(FName("SoftClassReference")));
+        auto* Match = G.Call(UKismetStringLibrary::StaticClass(), "EqualEqual_StrStr");
+        Link(Name->GetReturnValuePin(), Match->FindPinChecked(FName("A"))); Value(Match->FindPinChecked(FName("B")), "/Game/PBZContent/UI/GameSystem/Settings/W_PBZSettingPanel.W_PBZSettingPanel_C"); G.Guard(Match->GetReturnValuePin());
+        auto* Active = G.Local("TryBindActiveSettings");
+        Link(Widget, Active->FindPinChecked(FName("Widget"))); Link(Widget, Active->FindPinChecked(FName("Object"))); G.Run(Active);
+    }
+    {
+        Graph G(Functions["TryBindActiveSettings"]);
+        auto Widget = G.Entry->FindPinChecked(FName("Widget"));
+        auto Object = G.Entry->FindPinChecked(FName("Object")); G.Guard(G.Valid(Object));
+        auto Host = G.CastObject(Object, UCommonActivatableWidget::StaticClass());
+        auto* ValidHost = G.Branch(G.Valid(Host));
+        auto* IsActive = G.Call(UCommonActivatableWidget::StaticClass(), "IsActivated", Host);
+        auto* Active = G.Branch(IsActive->GetReturnValuePin());
+        // An old cached panel must never replace the subscription to an open menu.
+        G.Guard(G.Math("NotEqual_ObjectObject", Widget, G.Get("SettingsPanel")));
+        G.Run(G.Local("UnbindSettings")); G.Set("SettingsPanel", Widget);
+        G.Guard(G.Valid(G.Get("SettingsPanel")));
+        auto* Chain = G.Local("BindMenuChain"); Link(Widget, Chain->FindPinChecked(FName("Object"))); G.Run(Chain);
+        G.Exec = ValidHost->GetElsePin();
+        auto* Outer = G.Call(UKismetSystemLibrary::StaticClass(), "GetOuterObject"); Link(Object, Outer->FindPinChecked(FName("Object")));
+        auto* Next = G.Local("TryBindActiveSettings");
+        Link(Widget, Next->FindPinChecked(FName("Widget"))); Link(Outer->GetReturnValuePin(), Next->FindPinChecked(FName("Object"))); G.Run(Next);
+        Link(Active->GetElsePin(), Next->FindPinChecked(Schema::PN_Execute));
+    }
+    {
+        Graph G(Functions["FindSettings"]);
+        auto* Find = G.Call(UWidgetBlueprintLibrary::StaticClass(), "GetAllWidgetsOfClass");
+        Link(G.Self(), Find->FindPinChecked(FName("WorldContextObject")));
+        // GameSettingPanel derives from CommonUserWidget, not CommonActivatableWidget.
+        GetDefault<Schema>()->TrySetDefaultObject(*Find->FindPinChecked(FName("WidgetClass")), UCommonUserWidget::StaticClass());
+        Value(Find->FindPinChecked(FName("TopLevelOnly")), "false"); G.Run(Find);
+        G.ForEach(Find->FindPinChecked(FName("FoundWidgets")), "TryBindSettings", "Widget");
+    }
+    {
+        Graph G(Functions["BindSettingMenu"]); auto Widget = G.Entry->FindPinChecked(FName("Widget")); G.Guard(G.Valid(Widget));
+        auto* Contains = G.Call(UKismetArrayLibrary::StaticClass(), "Array_Contains");
+        Link(G.Get("SettingsMenus"), Contains->FindPinChecked(FName("TargetArray"))); Link(Widget, Contains->FindPinChecked(FName("ItemToFind")));
+        G.Guard(Contains->GetReturnValuePin(), false);
+        G.Delegate(UCommonActivatableWidget::StaticClass(), "BP_OnWidgetDeactivated", Widget, "SettingsClosed", true);
+        auto* Add = G.Call(UKismetArrayLibrary::StaticClass(), "Array_Add");
+        Link(G.Get("SettingsMenus"), Add->FindPinChecked(FName("TargetArray"))); Link(Widget, Add->FindPinChecked(FName("NewItem"))); G.Run(Add);
+    }
+    {
+        // Walk the ownership chain once when the panel is discovered, not every frame.
+        // Parent menu deactivation does not necessarily deactivate its nested settings panel.
+        Graph G(Functions["BindMenuChain"]); auto Object = G.Entry->FindPinChecked(FName("Object")); G.Guard(G.Valid(Object));
+        auto* Bind = G.Local("BindSettingMenu"); Link(G.CastObject(Object, UCommonActivatableWidget::StaticClass()), Bind->FindPinChecked(FName("Widget"))); G.Run(Bind);
+        auto* Outer = G.Call(UKismetSystemLibrary::StaticClass(), "GetOuterObject"); Link(Object, Outer->FindPinChecked(FName("Object")));
+        auto* Next = G.Local("BindMenuChain"); Link(Outer->GetReturnValuePin(), Next->FindPinChecked(FName("Object"))); G.Run(Next);
+    }
+    {
+        Graph G(Functions["UnbindSettingMenu"]); auto Widget = G.Entry->FindPinChecked(FName("Widget")); G.Guard(G.Valid(Widget));
+        G.Delegate(UCommonActivatableWidget::StaticClass(), "BP_OnWidgetDeactivated", Widget, "SettingsClosed", false);
+    }
+    { Graph G(Functions["SettingsClosed"]); G.Run(G.Local("ReloadConfig")); }
+    { Graph G(Functions["LayerChanged"]); G.Run(G.Local("FindSettings")); }
+    for (auto Name : {FName("BindMenus"), FName("UnbindMenus")})
+    {
+        Graph G(Functions[Name]);
+        auto* Unbind = G.Call(UPBZBlueprintFunctionLibrary::StaticClass(), "UnbindLayerDisplayedWidgetChanged");
+        Link(G.Self(), Unbind->FindPinChecked(FName("Target"))); Value(Unbind->FindPinChecked(FName("FunctionName")), "LayerChanged"); G.Run(Unbind);
+        if (Name == "BindMenus")
+        {
+            auto* Bind = G.Call(UPBZBlueprintFunctionLibrary::StaticClass(), "BindLayerDisplayedWidgetChanged");
+            Link(G.Self(), Bind->FindPinChecked(FName("Target"))); Value(Bind->FindPinChecked(FName("FunctionName")), "LayerChanged"); G.Run(Bind);
+            G.Run(G.Local("FindSettings"));
+        }
+        else G.Run(G.Local("UnbindSettings"));
+    }
+
     auto* Events = FBlueprintEditorUtils::CreateNewGraph(BP, "Lifecycle", UEdGraph::StaticClass(), Schema::StaticClass());
     FBlueprintEditorUtils::AddUbergraphPage(BP, Events);
     auto* EndPlay = Node<UK2Node_Event>(Events);
@@ -664,7 +831,97 @@ bool TestBlueprint(UBlueprint* BP)
     Pawn->ASC->AddLooseGameplayTag(HeavyAttack); Pawn->ASC->RemoveLooseGameplayTag(HeavyAttack);
     const int32 StoppedCount = Count(); for (int32 I=0; I<100; ++I) Step();
     if (!Check(Input->Requests == 8 && Count() == StoppedCount, TEXT("shutdown removes delegates and timers"))) return false;
+    // Exercise the actual JSON nodes and configuration application in the generated BP.
+    const FString ConfigTestDirectory = FPaths::ProjectDir() / TEXT("ConfigTests");
+    IFileManager::Get().MakeDirectory(*ConfigTestDirectory, true);
+    const FString ConfigTestPath = ConfigTestDirectory / TEXT("settings.fixture.json");
+    IFileManager::Get().Delete(*ConfigTestPath);
+    FindFProperty<FStrProperty>(Actor->GetClass(), "ConfigPath")->SetPropertyValue_InContainer(Actor, ConfigTestPath);
+    auto Threshold = [&]() { return FindFProperty<FDoubleProperty>(Actor->GetClass(), "ThresholdPercent")->GetPropertyValue_InContainer(Actor); };
+    auto Protection = [&]() { return FindFProperty<FBoolProperty>(Actor->GetClass(), "ProtectShachiAttacks")->GetPropertyValue_InContainer(Actor); };
+    Invoke("ReloadConfig");
+    if (!Check(FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(), TEXT("missing JSON generates defaults"))) return false;
+    FFileHelper::SaveStringToFile(TEXT("{\"ThresholdPercent\":45,\"ProtectShachiAttacks\":false}"), *ConfigTestPath);
+    Invoke("SettingsClosed");
+    if (!Check(Threshold()==45 && !Protection(), TEXT("settings close reads both English JSON keys"))) return false;
+    Actor->ProcessEvent(Actor->FindFunctionChecked("Initialize"), &Init); Drain();
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 100); Drain(); Step(0.2f);
+    Pawn->ASC->AddLooseGameplayTag(HeavyAttack);
+    const int32 BeforeUnprotected = Input->Requests;
+    Pawn->ASC->SetNumericAttributeBase(Shachi, 40); Drain();
+    if (!Check(Input->Requests==BeforeUnprotected+1 && ProtectedCount()==0 && WatcherCount()==0,
+        TEXT("custom 45 percent threshold switches during paid attacks with protection off"))) return false;
+    Pawn->ASC->RemoveLooseGameplayTag(HeavyAttack);
+    const int32 UnchangedEvaluation = Count(); Invoke("SettingsClosed");
+    if (!Check(Count()==UnchangedEvaluation, TEXT("unchanged values do not reapply"))) return false;
+    Invoke("Shutdown");
+    IFileManager::Get().Delete(*ConfigTestPath); Invoke("ReloadConfig");
+    if (!Check(Threshold()==30 && Protection(), TEXT("deleted config regenerates defaults"))) return false;
+    IFileManager::Get().Delete(*ConfigTestPath);
+
+    // Match the game's hierarchy: the settings panel itself is NOT activatable.
+    auto* WidgetPackage = CreatePackage(TEXT("/Game/PBZContent/UI/GameSystem/Settings/W_PBZSettingPanel"));
+    auto* WidgetBP = FKismetEditorUtilities::CreateBlueprint(UCommonUserWidget::StaticClass(), WidgetPackage,
+        "W_PBZSettingPanel", BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+    FKismetEditorUtilities::CompileBlueprint(WidgetBP);
+    auto* Host = NewObject<UCommonActivatableWidget>(World);
+    auto* HostTree = NewObject<UWidgetTree>(Host);
+    auto* InnerHost = NewObject<UCommonActivatableWidget>(HostTree);
+    auto* InnerTree = NewObject<UWidgetTree>(InnerHost);
+    auto* Widget = NewObject<UUserWidget>(InnerTree, WidgetBP->GeneratedClass);
+    Host->ActivateWidget();
+    auto BoundPanel = [&]() { return FindFProperty<FObjectPropertyBase>(Actor->GetClass(), "SettingsPanel")->GetObjectPropertyValue_InContainer(Actor); };
+    auto BoundMenuCount = [&]() {
+        auto* Property = FindFProperty<FArrayProperty>(Actor->GetClass(), "SettingsMenus");
+        return FScriptArrayHelper(Property, Property->ContainerPtrToValuePtr<void>(Actor)).Num();
+    };
+    // Match the native binding helper's parameterless callback contract, then exercise
+    // the actual callback -> GetAllWidgetsOfClass -> ancestor subscriptions path.
+    auto* LayerCallback = Actor->FindFunctionChecked("LayerChanged");
+    if (!Check(LayerCallback->NumParms == 0, TEXT("native layer binding requires a parameterless callback"))) return false;
+    FScriptDelegate LayerDelegate;
+    LayerDelegate.BindUFunction(Actor, "LayerChanged");
+    LayerDelegate.ProcessDelegate<UObject>(nullptr);
+    LayerDelegate.ProcessDelegate<UObject>(nullptr);
+    if (!Check(!Widget->IsA<UCommonActivatableWidget>() && BoundPanel()==Widget && BoundMenuCount()==2,
+        TEXT("real widget discovery finds non-activatable panel and binds both ancestors exactly once"))) return false;
+    auto* Event = FindFProperty<FMulticastDelegateProperty>(UCommonActivatableWidget::StaticClass(), "BP_OnWidgetDeactivated");
+    auto* HostDelegate = Event->ContainerPtrToValuePtr<FMulticastScriptDelegate>(Host);
+    auto* InnerDelegate = Event->ContainerPtrToValuePtr<FMulticastScriptDelegate>(InnerHost);
+    auto Reloads = [&]() { return FindFProperty<FIntProperty>(Actor->GetClass(), "ConfigReloadCount")->GetPropertyValue_InContainer(Actor); };
+    const int32 BeforeClose = Reloads();
+    IFileManager::Get().Delete(*ConfigTestPath);
+    HostDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(Reloads()==BeforeClose+1 && FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(),
+        TEXT("outer menu closure alone restores deleted config without panel deactivation"))) return false;
+    FFileHelper::SaveStringToFile(TEXT("{\"ThresholdPercent\":99,\"ProtectShachiAttacks\":false}"), *ConfigTestPath);
+    InnerDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(Reloads()==BeforeClose+2 && Threshold()==99 && !Protection(), TEXT("nested host closure loads changed config into live actor"))) return false;
+    Invoke("UnbindSettings");
+    HostDelegate->ProcessMulticastDelegate<UObject>(nullptr); InnerDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(Reloads()==BeforeClose+2 && BoundMenuCount()==0, TEXT("cleanup removes every ancestor subscription"))) return false;
+    auto* ReplacementHost = NewObject<UCommonActivatableWidget>(World);
+    auto* ReplacementTree = NewObject<UWidgetTree>(ReplacementHost);
+    auto* ReplacementWidget = NewObject<UUserWidget>(ReplacementTree, WidgetBP->GeneratedClass);
+    Host->DeactivateWidget();
+    ReplacementHost->ActivateWidget();
+    struct FWidgetParam { UUserWidget* Widget; } WidgetParam{ReplacementWidget};
+    Actor->ProcessEvent(Actor->FindFunctionChecked("TryBindSettings"), &WidgetParam);
+    // Reproduce enumeration with a closed cached panel after the current panel.
+    FWidgetParam StaleWidgetParam{Widget};
+    Actor->ProcessEvent(Actor->FindFunctionChecked("TryBindSettings"), &StaleWidgetParam);
+    if (!Check(BoundPanel()==ReplacementWidget && BoundMenuCount()==1,
+        TEXT("closed cached panel cannot steal the current menu subscription"))) return false;
+    IFileManager::Get().Delete(*ConfigTestPath);
+    HostDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(!FPaths::FileExists(ConfigTestPath), TEXT("old menu no longer receives changes after replacement"))) return false;
+    Event->ContainerPtrToValuePtr<FMulticastScriptDelegate>(ReplacementHost)->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(Reloads()==BeforeClose+3 && FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(), TEXT("replacement menu receives closure and restores defaults"))) return false;
+    Invoke("UnbindSettings");
+    UE_LOG(LogTemp, Display, TEXT("ASW_MENU_ANCESTOR_TESTS_PASS: parameterless native layer callback, actual non-activatable panel discovery, parent binding, live edited values, reset regeneration, duplicate prevention, cleanup, replacement"));
+    IFileManager::Get().Delete(*ConfigTestPath);
     Actor->Destroy();
+    UE_LOG(LogTemp, Display, TEXT("ASW_CONFIG_TESTS_PASS: native JSON defaults/read, settings-close reload, custom threshold, protection off, unchanged values, reset"));
     UE_LOG(LogTemp, Display, TEXT("ASW_BLUEPRINT_TESTS_PASS: recovery filtering, fresh queued evaluation, high-resource cost capture, identical watcher reuse, incremental watcher removal, actual cost protection, free follow-up, maximum, cooldown, threshold, idle, reinit, shutdown"));
     return true;
 }
@@ -698,6 +955,8 @@ bool TestLifecycle(UBlueprint* BP)
         return Pawn;
     };
     auto* Actor = World->SpawnActor<AActor>(BP->GeneratedClass);
+    // Keep lifecycle tests from generating user configuration outside the fixture directory.
+    FindFProperty<FStrProperty>(Actor->GetClass(), "ConfigPath")->SetPropertyValue_InContainer(Actor, TEXT("test-path-unused"));
     auto Invoke = [&](FName Name) { Actor->ProcessEvent(Actor->FindFunctionChecked(Name), nullptr); };
     auto Count = [&](FName Name) { return FindFProperty<FIntProperty>(Actor->GetClass(), Name)->GetPropertyValue_InContainer(Actor); };
     auto Ready = [&]() { return FindFProperty<FBoolProperty>(Actor->GetClass(), "Ready")->GetPropertyValue_InContainer(Actor); };
