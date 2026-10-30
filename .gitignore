@@ -26,3 +26,7 @@ _temp/
 /BPMod/*/DerivedDataCache/
 /BPMod/*/.vs/
 /BPMod/*/__pycache__/
+
+# Local AutoSwitchWeapon editor configuration, not required by the mod.
+/BPMod/AutoSwitchWeapon/Config/DefaultEngine.ini
+/BPMod/AutoSwitchWeapon/Config/DefaultInput.ini
