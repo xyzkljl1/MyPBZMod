@@ -667,7 +667,12 @@ void BuildGraphs(UBlueprint* BP)
         Graph G(Functions["UnbindSettingMenu"]); auto Widget = G.Entry->FindPinChecked(FName("Widget")); G.Guard(G.Valid(Widget));
         G.Delegate(UCommonActivatableWidget::StaticClass(), "BP_OnWidgetDeactivated", Widget, "SettingsClosed", false);
     }
-    { Graph G(Functions["SettingsClosed"]); G.Run(G.Local("ReloadConfig")); }
+    {
+        // Native deactivation precedes MCU's final input commit on some close paths.
+        // One non-looping timer reads after the close stack unwinds / gameplay resumes.
+        // Setting the same object/function timer again coalesces ancestor notifications.
+        Graph G(Functions["SettingsClosed"]); G.Timer("ReloadConfig", nullptr, "0.001");
+    }
     { Graph G(Functions["LayerChanged"]); G.Run(G.Local("FindSettings")); }
     for (auto Name : {FName("BindMenus"), FName("UnbindMenus")})
     {
@@ -680,7 +685,7 @@ void BuildGraphs(UBlueprint* BP)
             Link(G.Self(), Bind->FindPinChecked(FName("Target"))); Value(Bind->FindPinChecked(FName("FunctionName")), "LayerChanged"); G.Run(Bind);
             G.Run(G.Local("FindSettings"));
         }
-        else G.Run(G.Local("UnbindSettings"));
+        else { G.ClearTimer("ReloadConfig"); G.Run(G.Local("UnbindSettings")); }
     }
 
     auto* Events = FBlueprintEditorUtils::CreateNewGraph(BP, "Lifecycle", UEdGraph::StaticClass(), Schema::StaticClass());
@@ -842,7 +847,7 @@ bool TestBlueprint(UBlueprint* BP)
     Invoke("ReloadConfig");
     if (!Check(FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(), TEXT("missing JSON generates defaults"))) return false;
     FFileHelper::SaveStringToFile(TEXT("{\"ThresholdPercent\":45,\"ProtectShachiAttacks\":false}"), *ConfigTestPath);
-    Invoke("SettingsClosed");
+    Invoke("SettingsClosed"); Drain();
     if (!Check(Threshold()==45 && !Protection(), TEXT("settings close reads both English JSON keys"))) return false;
     Actor->ProcessEvent(Actor->FindFunctionChecked("Initialize"), &Init); Drain();
     Pawn->ASC->SetNumericAttributeBase(Shachi, 100); Drain(); Step(0.2f);
@@ -852,7 +857,7 @@ bool TestBlueprint(UBlueprint* BP)
     if (!Check(Input->Requests==BeforeUnprotected+1 && ProtectedCount()==0 && WatcherCount()==0,
         TEXT("custom 45 percent threshold switches during paid attacks with protection off"))) return false;
     Pawn->ASC->RemoveLooseGameplayTag(HeavyAttack);
-    const int32 UnchangedEvaluation = Count(); Invoke("SettingsClosed");
+    const int32 UnchangedEvaluation = Count(); Invoke("SettingsClosed"); Drain();
     if (!Check(Count()==UnchangedEvaluation, TEXT("unchanged values do not reapply"))) return false;
     Invoke("Shutdown");
     IFileManager::Get().Delete(*ConfigTestPath); Invoke("ReloadConfig");
@@ -892,13 +897,19 @@ bool TestBlueprint(UBlueprint* BP)
     const int32 BeforeClose = Reloads();
     IFileManager::Get().Delete(*ConfigTestPath);
     HostDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    Drain();
     if (!Check(Reloads()==BeforeClose+1 && FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(),
         TEXT("outer menu closure alone restores deleted config without panel deactivation"))) return false;
-    FFileHelper::SaveStringToFile(TEXT("{\"ThresholdPercent\":99,\"ProtectShachiAttacks\":false}"), *ConfigTestPath);
+    // Reproduce the observed game ordering: close callbacks first, final UI commit second.
+    HostDelegate->ProcessMulticastDelegate<UObject>(nullptr);
     InnerDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    if (!Check(Reloads()==BeforeClose+1, TEXT("close callbacks defer disk reads until after pending UI commits"))) return false;
+    FFileHelper::SaveStringToFile(TEXT("{\"ThresholdPercent\":99,\"ProtectShachiAttacks\":false}"), *ConfigTestPath);
+    Drain();
     if (!Check(Reloads()==BeforeClose+2 && Threshold()==99 && !Protection(), TEXT("nested host closure loads changed config into live actor"))) return false;
     Invoke("UnbindSettings");
     HostDelegate->ProcessMulticastDelegate<UObject>(nullptr); InnerDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    Drain();
     if (!Check(Reloads()==BeforeClose+2 && BoundMenuCount()==0, TEXT("cleanup removes every ancestor subscription"))) return false;
     auto* ReplacementHost = NewObject<UCommonActivatableWidget>(World);
     auto* ReplacementTree = NewObject<UWidgetTree>(ReplacementHost);
@@ -914,11 +925,15 @@ bool TestBlueprint(UBlueprint* BP)
         TEXT("closed cached panel cannot steal the current menu subscription"))) return false;
     IFileManager::Get().Delete(*ConfigTestPath);
     HostDelegate->ProcessMulticastDelegate<UObject>(nullptr);
+    Drain();
     if (!Check(!FPaths::FileExists(ConfigTestPath), TEXT("old menu no longer receives changes after replacement"))) return false;
     Event->ContainerPtrToValuePtr<FMulticastScriptDelegate>(ReplacementHost)->ProcessMulticastDelegate<UObject>(nullptr);
+    Drain();
     if (!Check(Reloads()==BeforeClose+3 && FPaths::FileExists(ConfigTestPath) && Threshold()==30 && Protection(), TEXT("replacement menu receives closure and restores defaults"))) return false;
-    Invoke("UnbindSettings");
-    UE_LOG(LogTemp, Display, TEXT("ASW_MENU_ANCESTOR_TESTS_PASS: parameterless native layer callback, actual non-activatable panel discovery, parent binding, live edited values, reset regeneration, duplicate prevention, cleanup, replacement"));
+    Event->ContainerPtrToValuePtr<FMulticastScriptDelegate>(ReplacementHost)->ProcessMulticastDelegate<UObject>(nullptr);
+    Invoke("UnbindMenus"); Drain();
+    if (!Check(Reloads()==BeforeClose+3, TEXT("stopping menu observation cancels queued configuration reads"))) return false;
+    UE_LOG(LogTemp, Display, TEXT("ASW_MENU_ANCESTOR_TESTS_PASS: parameterless native callback, active menu selection, deferred read after UI commit, coalesced closure events, reset, cleanup, queued read cancellation"));
     IFileManager::Get().Delete(*ConfigTestPath);
     Actor->Destroy();
     UE_LOG(LogTemp, Display, TEXT("ASW_CONFIG_TESTS_PASS: native JSON defaults/read, settings-close reload, custom threshold, protection off, unchanged values, reset"));
