@@ -1,4 +1,5 @@
-local mcu = require("mcu_core")
+local hasMcu, mcu = pcall(require, "mcu_core")
+local initConfig = hasMcu and mcu.InitFromFile or function() return {CostPercent = 0} end
 local BACKPACK = "/Script/ProjectPBZ.PBZBackPackSubsystem:"
 local hooks, stopped = {}, false
 
@@ -20,7 +21,7 @@ local function queueRefresh()
     end)
 end
 
-local config, err = mcu.InitFromFile({
+local config, err = initConfig({
     fields = {
         {key = "CostPercent", type = "IntSlider", label = "Upgrade Cost (%)",
             default = 0, min = 0, max = 100, step = 1, onchange = queueRefresh,
